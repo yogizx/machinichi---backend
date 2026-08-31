@@ -34,7 +34,7 @@ app.use(helmet({
       styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
       fontSrc: ["'self'", "https://fonts.gstatic.com"],
       imgSrc: ["'self'", "data:", "https://images.unsplash.com", "https://flagcdn.com", "https://lh3.googleusercontent.com", "blob:"],
-      connectSrc: ["'self'", process.env.CLIENT_URL || "http://localhost:5173"],
+      connectSrc: ["'self'", process.env.CLIENT_URL || "http://localhost:5173", "https://machinichii.netlify.app"],
       frameSrc: ["'none'"],
       objectSrc: ["'none'"],
       upgradeInsecureRequests: isProduction ? [] : null,
@@ -54,6 +54,7 @@ const allowedOrigins = [
   process.env.CLIENT_URL,
   'https://machinichi.com',
   'https://www.machinichi.com',
+  'https://machinichii.netlify.app',
   ...(!isProduction ? ['http://localhost:5173', 'http://localhost:5174'] : []),
 ].filter(Boolean) as string[];
 
@@ -151,21 +152,37 @@ if (!MONGO_URI) {
   process.exit(1);
 }
 
-mongoose
-  .connect(MONGO_URI)
-  .then(async () => {
-    console.log('Connected to MongoDB Atlas');
-    app.listen(PORT, async () => {
-      console.log(`Server running at http://localhost:${PORT}`);
-      console.log(`[SMTP STARTUP] Verifying SMTP configuration...`);
-      const smtpReady = await verifySmtpConfig();
-      if (!smtpReady) {
-        console.warn(`[SMTP STARTUP] WARNING: SMTP is NOT configured correctly. Welcome emails will fail.`);
-        console.warn(`[SMTP STARTUP] Please check SMTP_HOST, SMTP_PORT, SMTP_EMAIL, SMTP_PASSWORD, and EMAIL_FROM in .env`);
+async function connectWithRetry(retries = 5, delayMs = 3000) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      await mongoose.connect(MONGO_URI as string, {
+        serverSelectionTimeoutMS: 15000,
+        socketTimeoutMS: 45000,
+      } as any);
+      console.log('Connected to MongoDB Atlas');
+      app.listen(PORT, async () => {
+        console.log(`Server running at http://localhost:${PORT}`);
+        console.log(`[SMTP STARTUP] Verifying SMTP configuration...`);
+        const smtpReady = await verifySmtpConfig();
+        if (!smtpReady) {
+          console.warn(`[SMTP STARTUP] WARNING: SMTP is NOT configured correctly. Welcome emails will fail.`);
+          console.warn(`[SMTP STARTUP] Please check SMTP_HOST, SMTP_PORT, SMTP_EMAIL, SMTP_PASSWORD, and EMAIL_FROM in .env`);
+        }
+      });
+      return;
+    } catch (err: any) {
+      console.error(`MongoDB connection failed (attempt ${attempt}/${retries}):`, err.message);
+      if (attempt === retries) {
+        console.error('All MongoDB retries exhausted. Check:');
+        console.error('  1. Internet/VPN — Atlas requires outbound 27017');
+        console.error('  2. Atlas Network Access → IP Whitelist (add 0.0.0.0/0 for dev or your current IP)');
+        console.error('  3. MONGODB_URI credentials/cluster still valid');
+        console.error('  4. Try SRV form: mongodb+srv://mdpitme_db_user:<pwd>@ac-uc7bea3.t2qzlhy.mongodb.net/machinichi?retryWrites=true&w=majority');
+        process.exit(1);
       }
-    });
-  })
-  .catch((err) => {
-    console.error('MongoDB connection failed:', err.message);
-    process.exit(1);
-  });
+      console.log(`Retrying in ${delayMs}ms...`);
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+}
+connectWithRetry();

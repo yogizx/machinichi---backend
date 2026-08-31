@@ -84,9 +84,9 @@ router.post(
         fs.unlinkSync(req.file.path);
       }
 
-      const base = `${req.protocol}://${req.get('host')}`;
-      const imageWebp = `${base}/uploads/${webpFilename}`;
-      const imageFallback = `${base}/uploads/${fallbackFilename}`;
+      const base = process.env.API_URL || process.env.PUBLIC_URL || 'http://localhost:3000';
+      const imageWebp = `${base.replace(/\/$/, '')}/uploads/${webpFilename}`;
+      const imageFallback = `${base.replace(/\/$/, '')}/uploads/${fallbackFilename}`;
 
       return res.json({
         success: true,

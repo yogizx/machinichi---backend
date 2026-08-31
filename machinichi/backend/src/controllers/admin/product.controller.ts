@@ -191,7 +191,7 @@ export const bulkUpdateStock = async (req: AuthRequest, res: Response, next: Nex
       return sendError(res, 'Updates array is required', 400);
     }
 
-    const results = [];
+    const results: any[] = [];
     for (const update of updates) {
       const { productId, quantity, variantSize } = update;
       const product = await Product.findById(productId);

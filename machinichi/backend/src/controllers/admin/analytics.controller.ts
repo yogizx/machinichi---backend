@@ -557,7 +557,7 @@ const getReportData = async (reportType: string, startDate: Date, endDate: Date)
       }
     ]);
     
-    const result = [];
+    const result: any[] = [];
     for (const cat of categorySales) {
       if (!cat._id) continue;
       const productCount = await Product.countDocuments({ category: cat._id, isDeleted: false });
@@ -569,7 +569,7 @@ const getReportData = async (reportType: string, startDate: Date, endDate: Date)
       });
     }
     
-    return result.sort((a, b) => b.unitsSold - a.unitsSold);
+    return result.sort((a: any, b: any) => b.unitsSold - a.unitsSold);
   }
 
   return [

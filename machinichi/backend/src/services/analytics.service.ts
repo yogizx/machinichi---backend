@@ -4,6 +4,8 @@ import { ProductViewEvent } from '../models/ProductViewEvent';
 import { ProductAnalytics } from '../models/ProductAnalytics';
 import { Product } from '../models/Product';
 import { Order } from '../models/Order';
+import { broadcastProductUpdate } from './realtime.service';
+import { APPROVED_ORDER_STATUSES } from './regionalAnalytics.service';
 
 function getPeriodStart(): { day: Date; week: Date; month: Date } {
   const now = new Date();
@@ -89,17 +91,35 @@ async function updatePeriodCounts(productId: Types.ObjectId) {
   );
 }
 
+// Matches the exact set of orders that actually trigger recordPurchase()
+// elsewhere in the codebase, so the Growth metric never disagrees with the
+// totalPurchases/totalRevenue counters it's meant to summarize:
+//  - COD orders: purchase is recorded immediately at placeOrder
+//    (checkout.controller.ts), regardless of orderStatus, so any COD order
+//    not yet cancelled counts.
+//  - Online-payment orders: purchase is recorded only once the seller
+//    accepts the order (order.controller.ts updateOrderStatus), i.e. once
+//    `status` reaches one of APPROVED_ORDER_STATUSES.
+// This intentionally replaces the old `paymentStatus: 'Paid'` filter, which
+// silently excluded every COD sale (COD orders are never marked 'Paid' in
+// this app — they're paid on delivery) and understated weekly/monthly growth.
+function successfulSaleMatch(): Record<string, unknown> {
+  return {
+    $or: [
+      { paymentMethod: 'cod', status: { $ne: 'cancelled' } },
+      { paymentMethod: { $ne: 'cod' }, status: { $in: APPROVED_ORDER_STATUSES } },
+    ],
+  };
+}
+
 async function getPeriodSales(
   productId: Types.ObjectId,
   since: Date,
   until?: Date,
 ): Promise<number> {
-  const match: Record<string, unknown> = {
-    paymentStatus: 'Paid',
-  };
   const dateFilter: Record<string, Date> = { $gte: since };
   if (until) dateFilter.$lt = until;
-  match.createdAt = dateFilter;
+  const match: Record<string, unknown> = { ...successfulSaleMatch(), createdAt: dateFilter };
 
   const result = await Order.aggregate([
     { $match: match },
@@ -187,6 +207,8 @@ export const trackView = async (
 
   await updatePeriodCounts(pid);
 
+  broadcastProductUpdate({ type: 'view', productId: pid.toString() });
+
   return { counted: true, firstViewed: true };
 };
 
@@ -225,12 +247,23 @@ export const mergeGuestViews = async (userId: string, guestId: string) => {
     { $set: { "currentCartUsers.$[elem]": userId } },
     { arrayFilters: [{ elem: guestId }] },
   );
+
+  // Wishlist merge — same dedup logic as cart
+  await ProductAnalytics.updateMany(
+    { currentWishlistUsers: { $all: [guestId, userId] } },
+    { $pull: { currentWishlistUsers: guestId }, $inc: { totalUniqueWishlistUsers: -1 } },
+  );
+  await ProductAnalytics.updateMany(
+    { currentWishlistUsers: guestId },
+    { $set: { "currentWishlistUsers.$[elem]": userId } },
+    { arrayFilters: [{ elem: guestId }] },
+  );
 };
 
 async function ensureAnalyticsDoc(productId: Types.ObjectId) {
   await ProductAnalytics.updateOne(
     { productId },
-    { $setOnInsert: { productId, currentCartUsers: [] } },
+    { $setOnInsert: { productId, currentCartUsers: [], currentWishlistUsers: [] } },
     { upsert: true },
   );
 }
@@ -263,6 +296,8 @@ export const trackCartAdd = async (
     { $addToSet: { currentCartUsers: key }, $inc: incFields },
   );
 
+  broadcastProductUpdate({ type: 'cart', productId: productId });
+
   return { success: true, alreadyInCart };
 };
 
@@ -279,6 +314,37 @@ export const trackCartRemove = async (
     { $pull: { currentCartUsers: { $in: keys } }, $inc: { totalCartRemoves: 1 } },
   );
 
+  broadcastProductUpdate({ type: 'cart', productId: productId });
+
+  return { success: true };
+};
+
+export const trackWishlistAdd = async (
+  productId: string,
+  identity: { userId?: string; guestId?: string; sessionId?: string },
+) => {
+  const pid = new Types.ObjectId(productId);
+  const key = identityKey(identity.userId, identity.guestId, identity.sessionId);
+  if (!key) return { success: false };
+  await ensureAnalyticsDoc(pid);
+  const before = await ProductAnalytics.findOne({ productId: pid }).select('currentWishlistUsers');
+  const already = !!before?.currentWishlistUsers?.includes(key);
+  const inc: Record<string, number> = { totalWishlistAdds: 1 };
+  if (!already) inc.totalUniqueWishlistUsers = 1;
+  await ProductAnalytics.updateOne({ productId: pid }, { $addToSet: { currentWishlistUsers: key }, $inc: inc });
+  broadcastProductUpdate({ type: 'wishlist', productId });
+  return { success: true, alreadyInWishlist: already };
+};
+
+export const trackWishlistRemove = async (
+  productId: string,
+  identity: { userId?: string; guestId?: string; sessionId?: string },
+) => {
+  const pid = new Types.ObjectId(productId);
+  const keys = [identity.userId, identity.guestId, identity.sessionId].filter(Boolean);
+  if (keys.length === 0) return { success: false };
+  await ProductAnalytics.updateOne({ productId: pid }, { $pull: { currentWishlistUsers: { $in: keys } }, $inc: { totalWishlistRemoves: 1 } });
+  broadcastProductUpdate({ type: 'wishlist', productId });
   return { success: true };
 };
 
@@ -324,6 +390,9 @@ export const recordPurchase = async (
   await Product.findByIdAndUpdate(pid, {
     $inc: { totalSales: quantity, totalRevenue: revenue },
   });
+
+  broadcastProductUpdate({ type: 'purchase', productId });
+  broadcastProductUpdate({ type: 'stock', productId });
 };
 
 export const bulkRecordPurchases = async (
@@ -356,6 +425,11 @@ export const getProductAnalytics = async (productId: string) => {
     ? ((analytics.totalPurchases / totalUniqueCartUsers) * 100).toFixed(2)
     : null;
 
+  const wishlistCount = (analytics.currentWishlistUsers || []).length;
+  const totalUniqueWishlistUsers = analytics.totalUniqueWishlistUsers || wishlistCount;
+  const product = await Product.findById(pid).select('quantity warehouseStock reservedQuantity lowStockThreshold maxStock');
+  const stockCurrent = product ? (product.warehouseStock || product.quantity || 0) : 0;
+  const stockReserved = product ? (product.reservedQuantity || 0) : 0;
   return {
     totalUniqueViews: analytics.totalUniqueViews,
     totalUniqueCartUsers,
@@ -366,6 +440,9 @@ export const getProductAnalytics = async (productId: string) => {
     totalUnitsSold: analytics.totalUnitsSold,
     totalWishlistAdds: analytics.totalWishlistAdds,
     totalWishlistRemoves: analytics.totalWishlistRemoves,
+    wishlistCount,
+    totalUniqueWishlistUsers,
+    currentWishlistUsers: analytics.currentWishlistUsers || [],
     lastViewedAt: analytics.lastViewedAt,
     lastPurchasedAt: analytics.lastPurchasedAt,
     viewsToday: analytics.viewsToday,
@@ -377,8 +454,13 @@ export const getProductAnalytics = async (productId: string) => {
     dailySalesGrowth: analytics.dailySalesGrowth,
     weeklySalesGrowth: analytics.weeklySalesGrowth,
     monthlySalesGrowth: analytics.monthlySalesGrowth,
+    salesToday: analytics.salesToday,
+    salesThisWeek: analytics.salesThisWeek,
+    salesThisMonth: analytics.salesThisMonth,
+    previousWeekSales: analytics.previousWeekSales,
     conversionRate,
     cartConversionRate,
+    stock: { current: stockCurrent, reserved: stockReserved, available: Math.max(0, stockCurrent - stockReserved), lowStockThreshold: product?.lowStockThreshold || 10 },
   };
 };
 
@@ -386,11 +468,26 @@ export const getBulkProductAnalytics = async (productIds: string[]) => {
   if (!productIds.length) return {};
   const pids = productIds.map((id) => new Types.ObjectId(id));
   const analytics = await ProductAnalytics.find({ productId: { $in: pids } });
+  const products = await Product.find({ _id: { $in: pids } });
+
+  const productStockMap: Record<string, { current: number; reserved: number; available: number }> = {};
+  for (const p of products) {
+    const current = p.warehouseStock || p.quantity || 0;
+    const reserved = p.reservedQuantity || 0;
+    productStockMap[p._id.toString()] = {
+      current,
+      reserved,
+      available: Math.max(0, current - reserved),
+    };
+  }
 
   const map: Record<string, any> = {};
   for (const a of analytics) {
     const pid = a.productId.toString();
+    const stock = productStockMap[pid] || { current: 0, reserved: 0, available: 0 };
     const totalUniqueCartUsers = a.totalUniqueCartUsers || 0;
+    const wishlistCount = (a.currentWishlistUsers || []).length;
+    const totalWishlistUsers = a.totalUniqueWishlistUsers || wishlistCount;
     map[pid] = {
       totalUniqueViews: a.totalUniqueViews,
       totalUniqueCartUsers,
@@ -399,6 +496,11 @@ export const getBulkProductAnalytics = async (productIds: string[]) => {
       totalPurchases: a.totalPurchases,
       totalRevenue: a.totalRevenue,
       totalUnitsSold: a.totalUnitsSold,
+      totalWishlistAdds: a.totalWishlistAdds,
+      totalWishlistRemoves: a.totalWishlistRemoves,
+      wishlistCount,
+      totalUniqueWishlistUsers: totalWishlistUsers,
+      currentWishlistUsers: a.currentWishlistUsers || [],
       viewsToday: a.viewsToday,
       viewsThisWeek: a.viewsThisWeek,
       viewsThisMonth: a.viewsThisMonth,
@@ -408,13 +510,39 @@ export const getBulkProductAnalytics = async (productIds: string[]) => {
       dailySalesGrowth: a.dailySalesGrowth,
       weeklySalesGrowth: a.weeklySalesGrowth,
       monthlySalesGrowth: a.monthlySalesGrowth,
+      salesToday: a.salesToday,
+      salesThisWeek: a.salesThisWeek,
+      salesThisMonth: a.salesThisMonth,
+      previousWeekSales: a.previousWeekSales,
       conversionRate: a.totalUniqueViews > 0
         ? ((a.totalPurchases / a.totalUniqueViews) * 100).toFixed(2)
         : null,
       cartConversionRate: totalUniqueCartUsers > 0
         ? ((a.totalPurchases / totalUniqueCartUsers) * 100).toFixed(2)
         : null,
+      stock: {
+        current: stock.current,
+        reserved: stock.reserved,
+        available: stock.available,
+      },
     };
+  }
+  // Ensure every requested productId has an entry even if no analytics doc exists
+  for (const pid of productIds) {
+    if (!map[pid]) {
+      const stock = productStockMap[pid] || { current: 0, reserved: 0, available: 0 };
+      map[pid] = {
+        totalUniqueViews: 0, totalUniqueCartUsers: 0, currentCartCount: 0, totalCartAdds: 0,
+        totalPurchases: 0, totalRevenue: 0, totalUnitsSold: 0,
+        totalWishlistAdds: 0, totalWishlistRemoves: 0, wishlistCount: 0, totalUniqueWishlistUsers: 0, currentWishlistUsers: [],
+        viewsToday: 0, viewsThisWeek: 0, viewsThisMonth: 0,
+        dailyGrowth: null, weeklyGrowth: null, monthlyGrowth: null,
+        dailySalesGrowth: null, weeklySalesGrowth: null, monthlySalesGrowth: null,
+        salesToday: 0, salesThisWeek: 0, salesThisMonth: 0, previousWeekSales: 0,
+        conversionRate: null, cartConversionRate: null,
+        stock,
+      };
+    }
   }
   return map;
 };

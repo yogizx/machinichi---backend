@@ -12,6 +12,8 @@ export interface IProductAnalytics extends mongoose.Document {
   totalUnitsSold: number;
   totalWishlistAdds: number;
   totalWishlistRemoves: number;
+  currentWishlistUsers: string[];
+  totalUniqueWishlistUsers: number;
   lastViewedAt: Date | null;
   lastPurchasedAt: Date | null;
   viewsToday: number;
@@ -47,6 +49,8 @@ const productAnalyticsSchema = new Schema<IProductAnalytics>({
   totalUnitsSold: { type: Number, default: 0 },
   totalWishlistAdds: { type: Number, default: 0 },
   totalWishlistRemoves: { type: Number, default: 0 },
+  currentWishlistUsers: [{ type: String }],
+  totalUniqueWishlistUsers: { type: Number, default: 0 },
   lastViewedAt: { type: Date, default: null },
   lastPurchasedAt: { type: Date, default: null },
   viewsToday: { type: Number, default: 0 },

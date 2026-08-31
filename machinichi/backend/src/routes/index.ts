@@ -16,6 +16,7 @@ import returnRoutes from './return.routes';
 import adminRoutes from './admin.routes';
 import trackingRoutes from './tracking.routes';
 import analyticsRoutes from './analytics.routes';
+import realtimeRoutes from './realtime.routes';
 
 const router = Router();
 
@@ -37,5 +38,6 @@ router.use('/returns', returnRoutes);
 router.use('/admin', adminRoutes);
 router.use('/tracking', trackingRoutes);
 router.use('/analytics', analyticsRoutes);
+router.use('/realtime', realtimeRoutes);
 
 export default router;
