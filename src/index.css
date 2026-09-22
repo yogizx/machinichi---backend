@@ -1,0 +1,155 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Playfair Display", Georgia, serif;
+  --font-sans: "Inter", Arial, sans-serif;
+  --font-serif: "Roboto", Arial, sans-serif;
+
+  --color-brand-dark: #321304;
+  --color-brand-brown: #5a3322;
+  --color-brand-primary: #fd761a;
+  --color-brand-cta: #ad4d00;
+  --color-brand: #fd761a;
+  --color-brand-dark: #e86710;
+  --color-brand-light: #fff8f1;
+
+  --color-bg-cream: #fffaf5;
+  --color-bg-warm: #fff8f1;
+  --color-bg-surface: #f7f0ea;
+  --color-bg-muted: #f2ebe5;
+  --color-background: #fffaf5;
+  --color-surface: #ffffff;
+
+  --color-border-soft: #eadfd7;
+  --color-border-medium: #e0d3c9;
+  --color-border-dark: #d8c9be;
+  --color-border: #e5d8cd;
+  --color-border-light: #f0e8e0;
+
+  --color-text-primary: #27201c;
+  --color-text-secondary: #4a3e38;
+  --color-text-muted: #796d66;
+  --color-text-subtle: #988b84;
+
+  --color-success: #23723a;
+  --color-success-bg: #e8f7ec;
+  --color-warning: #9a5a05;
+  --color-warning-bg: #fff0d8;
+  --color-error: #b62917;
+  --color-error-bg: #fff2ed;
+  --color-info: #3655a4;
+  --color-info-bg: #edf1ff;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-2xl: 24px;
+  --radius-full: 9999px;
+
+  --shadow-card: 0 8px 18px rgba(65, 38, 20, 0.09);
+  --shadow-card-hover: 0 16px 34px rgba(66, 36, 18, 0.11);
+  --shadow-modal: 0 24px 60px rgba(25, 12, 6, 0.28);
+  --shadow-header: 0 8px 24px rgba(45, 22, 12, 0.22);
+  --shadow-popover: 0 20px 48px rgba(0, 0, 0, 0.1);
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    font-family: "Inter", Arial, sans-serif;
+    background-color: #fffaf5;
+    color: #27201c;
+  }
+
+  h1, h2, h3, h4 {
+    font-family: "Playfair Display", Georgia, serif;
+  }
+}
+
+@layer components {
+  .account-shell {
+    --account-sidebar-width: 236px;
+  }
+
+  .account-sidebar-fixed {
+    width: 100%;
+  }
+
+  @media (min-width: 768px) {
+    .account-sidebar-fixed {
+      left: max((100vw - 1390px) / 2, 0px);
+      position: absolute;
+      top: 0;
+      width: var(--account-sidebar-width);
+      z-index: 10;
+    }
+  }
+
+  .admin-input {
+    @apply h-12 w-full rounded-[8px] border border-transparent bg-[#e9dfd8] px-4 text-[13px] font-semibold text-[#302119] outline-none placeholder:text-[#8f8178] transition focus:border-[#b5480b] focus:bg-white focus:shadow-[0_0_0_4px_rgba(181,72,11,0.1)];
+  }
+
+  .time-select {
+    @apply h-11 w-full rounded-[8px] border border-transparent bg-[#e9dfd8] px-1 text-[13px] font-semibold text-[#302119] outline-none transition focus:border-[#b5480b] focus:bg-white focus:shadow-[0_0_0_4px_rgba(181,72,11,0.1)];
+    text-align-last: center;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    background-image: none;
+  }
+
+  .skip-link {
+    @apply sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-[100] focus:bg-white focus:px-4 focus:py-2 focus:rounded-lg focus:shadow-lg focus:text-[#27201c] focus:font-semibold;
+  }
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes slideInRight {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes slideOutRight {
+  from { transform: translateX(0); }
+  to { transform: translateX(100%); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.9); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes cartBadgeBounce {
+  0%, 100% { transform: scale(1); }
+  30% { transform: scale(1.4); }
+  60% { transform: scale(0.9); }
+  80% { transform: scale(1.15); }
+}
+
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulseGlow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(253, 118, 26, 0.4); }
+  50% { box-shadow: 0 0 0 8px rgba(253, 118, 26, 0); }
+}
