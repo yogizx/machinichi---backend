@@ -58,7 +58,7 @@ export function normalizeProduct(p) {
   const discountPercent = rawMrp > rawPrice ? Math.round(((rawMrp - rawPrice) / rawMrp) * 100) : 0;
 
   const image = p.images?.[0]?.url || p.image || FALLBACK_IMG;
-  const rating = p.rating ?? 4.5;
+  const rating = typeof p.averageRating === "number" ? Math.round(p.averageRating * 10) / 10 : (p.rating ?? 0);
   const reviewCount = p.reviewCount ?? p.reviews?.length ?? 0;
   const origin = p.origin || "";
   const category = p.category?.name || p.category || "General";
@@ -104,7 +104,7 @@ export function defaultProduct() {
     price: "₹0",
     oldPrice: null,
     mrp: null,
-    rating: 4.5,
+    rating: 0,
     reviewCount: 0,
     badge: null,
     tags: [],

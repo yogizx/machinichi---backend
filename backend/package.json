@@ -7,7 +7,9 @@
     "dev": "nodemon src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "seed": "ts-node src/seeds/seed.ts"
+    "seed": "ts-node src/seeds/seed.ts",
+    "migrate:cloudinary": "ts-node src/scripts/migrate-images-to-cloudinary.ts",
+    "sync:ratings": "ts-node src/scripts/sync-product-ratings.ts"
   },
   "keywords": [],
   "author": "",
@@ -27,6 +29,7 @@
     "@types/sharp": "^0.31.1",
     "@types/twilio": "^3.19.2",
     "bcrypt": "^6.0.0",
+    "cloudinary": "^1.41.3",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
@@ -40,6 +43,7 @@
     "mongoose": "^9.7.2",
     "morgan": "^1.11.0",
     "multer": "^2.2.0",
+    "multer-storage-cloudinary": "^4.0.0",
     "nodemailer": "^9.0.3",
     "pdfkit": "^0.19.1",
     "razorpay": "^2.9.6",

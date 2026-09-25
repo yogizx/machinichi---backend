@@ -513,6 +513,7 @@ export const createOrderSchema = z.object({
   billingAddress: addressDetailSchema.optional(),
   paymentMethod: z.enum(['razorpay', 'cod']),
   coupon: couponApplySchema,
+  scratchCouponId: objectIdSchema.optional(),
   notes: z.string().max(500).optional(),
   isIntraState: z.boolean().optional().default(true),
   shippingCharges: z.number().nonnegative().optional().default(0),
@@ -585,9 +586,11 @@ export const createDirectPaymentOrderSchema = z.object({
   coupon: z.object({
     code: z.string(),
     couponId: objectIdSchema,
-    discountAmount: z.number().optional().default(0),
-    discountType: z.string().optional(),
+  discountAmount: z.number().optional().default(0),
+  discountType: z.string().optional(),
   }).optional(),
+  scratchCouponId: objectIdSchema.optional(),
+  scratchDiscountAmount: z.number().nonnegative().optional().default(0),
 });
 
 export const verifyPaymentSchema = z.object({
@@ -610,6 +613,7 @@ export const createReviewSchema = z.object({
   title: z.string().max(200).optional(),
   comment: z.string().min(5).max(2000),
   images: z.array(z.string().url()).max(5).optional(),
+  variantSize: z.string().trim().max(200).optional(),
 });
 
 export const updateReviewSchema = z.object({
@@ -623,9 +627,30 @@ export const updateReviewSchema = z.object({
 
 export const reviewQuerySchema = paginationSchema.extend({
   rating: z.coerce.number().int().min(1).max(5).optional(),
+  variant: z.string().trim().max(200).optional(),
 });
 
 // ─── Coupon ────────────────────────────────────────────────
+export const scratchRuleSchema = z.object({
+  basis: z.enum(['quantity', 'order_amount']),
+  threshold: z.number().nonnegative('Rule threshold cannot be negative'),
+  discountType: z.enum(['percentage', 'fixed']),
+  discountValue: z.number().nonnegative('Rule discount value cannot be negative'),
+  label: z.string().trim().max(80).optional(),
+}).superRefine((rule, ctx) => {
+  if (rule.basis === 'quantity' && rule.threshold < 1) {
+    ctx.addIssue({ code: 'custom', path: ['threshold'], message: 'Product quantity rule must start at 1 item or more' });
+  }
+  if (rule.discountType === 'percentage' && (rule.discountValue <= 0 || rule.discountValue > 100)) {
+    ctx.addIssue({ code: 'custom', path: ['discountValue'], message: 'Percentage must be between 1 and 100' });
+  }
+  if (rule.discountType === 'fixed' && rule.discountValue <= 0) {
+    ctx.addIssue({ code: 'custom', path: ['discountValue'], message: 'Fixed amount must be greater than 0' });
+  }
+});
+
+export const districtNameSchema = z.string().trim().min(2, 'District name is too short').max(80, 'District name is too long');
+
 export const createCouponSchema = z.object({
   name: z.string().min(1, 'Offer name is required').max(100),
   code: z.string()
@@ -634,32 +659,79 @@ export const createCouponSchema = z.object({
     .regex(/^[A-Za-z0-9]+$/, 'Code must contain only letters and numbers')
     .transform(v => v.toUpperCase()),
   description: z.string().max(500).optional().default(''),
-  offerType: z.enum(['coupon', 'flash_sale', 'bundle', 'scratch_card']).optional().default('coupon'),
+  offerType: z.enum(['coupon', 'flash_sale', 'bundle', 'scratch_card', 'free_delivery']).optional().default('coupon'),
   discountType: z.enum(['percentage', 'free_delivery']),
   discountValue: z.number().min(0),
   maxDiscountAmount: z.number().positive().optional(),
   minOrderAmount: z.number().nonnegative().optional().default(0),
   minQuantity: z.number().int().nonnegative().optional().default(1),
+  scratchRules: z.array(scratchRuleSchema).max(20, 'A maximum of 20 scratch card rules is allowed').optional().default([]),
+  freeDeliveryDistricts: z.array(districtNameSchema).max(200, 'A maximum of 200 districts is allowed').optional().default([]),
   usageLimit: z.number().int().nonnegative().optional().default(0),
   perUserLimit: z.number().int().positive().optional().default(1),
   isActive: z.boolean().optional().default(true),
   status: z.enum(['active', 'draft']).optional().default('active'),
   startsAt: z.string().min(1, 'Start date is required'),
   expiresAt: z.string().min(1, 'End date is required'),
+}).superRefine((data, ctx) => {
+  if (data.discountType === 'percentage' && data.discountValue > 100) {
+    ctx.addIssue({ code: 'custom', path: ['discountValue'], message: 'Percentage discount cannot exceed 100' });
+  }
+  if (data.offerType === 'scratch_card' && data.scratchRules.length === 0) {
+    ctx.addIssue({ code: 'custom', path: ['scratchRules'], message: 'Add at least one scratch card discount rule' });
+  }
+  const seen = new Set<string>();
+  data.scratchRules.forEach((rule, index) => {
+    const key = `${rule.basis}:${rule.threshold}`;
+    if (seen.has(key)) {
+      ctx.addIssue({ code: 'custom', path: ['scratchRules', index, 'threshold'], message: 'Duplicate rule for the same condition' });
+    }
+    seen.add(key);
+  });
 });
 
-export const updateCouponSchema = createCouponSchema.partial();
+export const updateCouponSchema = z.object({
+  name: z.string().min(1).max(100).optional(),
+  code: z.string()
+    .min(3).max(10)
+    .regex(/^[A-Za-z0-9]+$/, 'Code must contain only letters and numbers')
+    .transform(v => v.toUpperCase())
+    .optional(),
+  description: z.string().max(500).optional(),
+  offerType: z.enum(['coupon', 'flash_sale', 'bundle', 'scratch_card', 'free_delivery']).optional(),
+  discountType: z.enum(['percentage', 'free_delivery']).optional(),
+  discountValue: z.number().min(0).optional(),
+  maxDiscountAmount: z.number().positive().nullable().optional(),
+  minOrderAmount: z.number().nonnegative().optional(),
+  minQuantity: z.number().int().nonnegative().optional(),
+  scratchRules: z.array(scratchRuleSchema).max(20).optional(),
+  freeDeliveryDistricts: z.array(districtNameSchema).max(200).optional(),
+  usageLimit: z.number().int().nonnegative().optional(),
+  perUserLimit: z.number().int().positive().optional(),
+  isActive: z.boolean().optional(),
+  status: z.enum(['active', 'draft', 'disabled', 'expired']).optional(),
+  startsAt: z.string().min(1).optional(),
+  expiresAt: z.string().min(1).optional(),
+});
 
 export const applyCouponSchema = z.object({
   code: z.string().min(1).transform(v => v.toUpperCase()),
   orderAmount: z.number().nonnegative(),
   totalQuantity: z.number().int().nonnegative().optional().default(0),
+  district: z.string().trim().max(80).optional(),
   items: z.array(z.object({
     productId: objectIdSchema,
     categoryId: objectIdSchema.optional(),
     quantity: z.number().int().positive(),
     sellingPrice: z.number().nonnegative(),
   })).min(1),
+});
+
+export const evaluateOffersSchema = z.object({
+  orderAmount: z.number().nonnegative(),
+  totalQuantity: z.number().int().nonnegative().optional().default(0),
+  district: z.string().trim().max(80).optional(),
+  couponCode: z.string().trim().max(20).optional(),
 });
 
 // ─── Return Request ─────────────────────────────────────────

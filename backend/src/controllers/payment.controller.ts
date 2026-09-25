@@ -20,6 +20,7 @@ import {
 } from '../services/razorpay.service';
 import { generateOrderId, generateInvoiceNumber } from '../services/orderId.service';
 import { reserveStock } from '../services/inventory.service';
+import { resolveAppliedOffer } from '../services/offer.service';
 import { Types } from 'mongoose';
 
 import { mapAddressForDb } from './checkout.controller';
@@ -83,7 +84,7 @@ export const createDirectPaymentOrder = async (req: AuthRequest, res: Response, 
       return sendError(res, 'Validation failed', 400, validation.error.issues);
     }
 
-    const { amount, currency, items, shippingAddress, subtotal, shippingCharges, discountAmount, promoCode, promoDiscount, coupon } = validation.data;
+    const { amount, currency, items, shippingAddress, subtotal, shippingCharges, discountAmount, promoCode, promoDiscount, coupon, scratchCouponId } = validation.data;
 
     const userId = new Types.ObjectId(req.user.userId);
 
@@ -124,6 +125,46 @@ export const createDirectPaymentOrder = async (req: AuthRequest, res: Response, 
 
     const totalGst = orderItems.reduce((s, i: any) => s + i.gstAmount, 0);
 
+    const cartSubtotal = orderItems.reduce((s, i: any) => s + i.lineTotal, 0);
+    const cartQuantity = orderItems.reduce((s, i: any) => s + i.quantity, 0);
+    const deliveryDistrict = shippingAddress?.city;
+
+    const scratchResolution = await resolveAppliedOffer({
+      couponId: scratchCouponId,
+      district: deliveryDistrict,
+      totalQuantity: cartQuantity,
+      orderAmount: cartSubtotal,
+    });
+    if (scratchCouponId && scratchResolution.error) {
+      return sendError(res, scratchResolution.error, 400);
+    }
+
+    const promoResolution = coupon?.couponId
+      ? await resolveAppliedOffer({
+        couponId: coupon.couponId,
+        district: deliveryDistrict,
+        totalQuantity: cartQuantity,
+        orderAmount: cartSubtotal,
+      })
+      : { coupon: null as any, scratchReward: null, freeDelivery: false, discountAmount: 0, error: null as string | null };
+    if (promoResolution.error) {
+      return sendError(res, promoResolution.error, 400);
+    }
+
+    const scratchReward = scratchResolution.scratchReward;
+    const resolvedScratchDiscount = scratchReward?.discountAmount ?? 0;
+    const resolvedPromoDiscount = promoResolution.coupon
+      ? promoResolution.discountAmount
+      : Math.min(Math.max(promoDiscount || 0, 0), cartSubtotal);
+    const resolvedShipping = promoResolution.freeDelivery ? 0 : Math.max(shippingCharges || 0, 0);
+    const serverDiscount = resolvedScratchDiscount + resolvedPromoDiscount;
+    const computedPayable = Math.max(cartSubtotal + resolvedShipping + totalGst - serverDiscount, 0);
+    const payableAmount = Math.min(computedPayable, Math.round(amount));
+
+    if (payableAmount < 1) {
+      return sendError(res, 'The applied offer covers the entire order amount. Please remove the offer to continue.', 400);
+    }
+
     const order = await Order.create({
       orderId: generateOrderId(),
       userId,
@@ -132,17 +173,37 @@ export const createDirectPaymentOrder = async (req: AuthRequest, res: Response, 
       shippingAddress: mapAddressForDb(shippingAddress),
       billingAddress: mapAddressForDb(shippingAddress),
       shippingMethod: 'standard',
-      shippingAmount: shippingCharges || 0,
-      subtotal: subtotal || amount,
-      totalDiscount: discountAmount + promoDiscount,
-      scratchDiscount: discountAmount ? { discountAmount } : null,
-      promoDiscount: promoCode ? { code: promoCode, discountAmount: promoDiscount } : null,
+      shippingAmount: resolvedShipping,
+      subtotal: cartSubtotal,
+      totalDiscount: serverDiscount,
+      scratchDiscount: scratchReward
+        ? {
+          discountType: scratchReward.discountType,
+          discountValue: scratchReward.discountValue,
+          discountAmount: scratchReward.discountAmount,
+          label: scratchReward.label,
+        }
+        : null,
+      promoDiscount: promoResolution.coupon
+        ? {
+          code: promoResolution.coupon.code,
+          discountType: promoResolution.coupon.discountType,
+          discountValue: promoResolution.coupon.discountValue,
+          discountAmount: resolvedPromoDiscount,
+          description: promoResolution.coupon.description,
+        }
+        : promoCode
+          ? { code: promoCode, discountAmount: resolvedPromoDiscount }
+          : null,
       cgst: Math.round(totalGst / 2),
       sgst: Math.round(totalGst / 2),
       igst: 0,
       totalGst,
-      orderTotal: amount,
-      totalAmount: amount,
+      orderTotal: payableAmount,
+      totalAmount: payableAmount,
+      couponCode: promoResolution.coupon?.code,
+      couponId: promoResolution.coupon?._id,
+      scratchCouponId: scratchReward?.couponId,
       paymentStatus: 'Pending',
       paymentMethod: 'razorpay',
       orderStatus: 'Pending Approval',
@@ -159,13 +220,21 @@ export const createDirectPaymentOrder = async (req: AuthRequest, res: Response, 
       }
     }
 
-    const razorpayOrder = await createRazorpayOrder(amount, currency, `ord_${order._id}`);
+    if (scratchCouponId && String(scratchCouponId) !== String(coupon?.couponId || '')) {
+      try {
+        await Coupon.findByIdAndUpdate(scratchCouponId, { $inc: { usedCount: 1 } });
+      } catch (scratchErr: any) {
+        console.error(`[CREATE DIRECT PAYMENT] Failed to increment scratch offer usedCount for ${scratchCouponId}:`, scratchErr?.message || scratchErr);
+      }
+    }
+
+    const razorpayOrder = await createRazorpayOrder(payableAmount, currency, `ord_${order._id}`);
 
     const payment = await Payment.create({
       userId,
       orderId: order._id,
       razorpayOrderId: razorpayOrder.id,
-      amount,
+      amount: payableAmount,
       currency: currency || 'INR',
       status: 'created',
     });

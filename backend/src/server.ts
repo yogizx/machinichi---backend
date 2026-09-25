@@ -39,7 +39,7 @@ app.use(helmet({
       scriptSrc: ["'self'", "https://apis.google.com", "https://www.gstatic.com"],
       styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
       fontSrc: ["'self'", "https://fonts.gstatic.com"],
-      imgSrc: ["'self'", "data:", "https://images.unsplash.com", "https://flagcdn.com", "https://lh3.googleusercontent.com", "blob:"],
+      imgSrc: ["'self'", "data:", "https://images.unsplash.com", "https://flagcdn.com", "https://lh3.googleusercontent.com", "https://res.cloudinary.com", "blob:"],
       connectSrc: ["'self'", process.env.CLIENT_URL || "http://localhost:5173", "https://machinichii.netlify.app"],
       frameSrc: ["'none'"],
       objectSrc: ["'none'"],

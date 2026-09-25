@@ -36,8 +36,6 @@ import api from "../services/api";
 // Visual image assets matching the reference image presentation
 const mainCookieBoxImage =
   "https://images.unsplash.com/photo-1558961363-fa8fdf82db35?auto=format&fit=crop&w=1000&q=92";
-const thumb1 =
-  "https://images.unsplash.com/photo-1558961363-fa8fdf82db35?auto=format&fit=crop&w=300&q=90";
 const thumb2 =
   "https://images.unsplash.com/photo-1499636136210-6f4ee915583e?auto=format&fit=crop&w=300&q=90";
 const thumb3 =
@@ -45,9 +43,11 @@ const thumb3 =
 const thumb4 =
   "https://images.unsplash.com/photo-1548365328-8c6db4b63388?auto=format&fit=crop&w=300&q=90";
 
-const customerReviewsList = [];
+
 
 const defaultSavedAddresses = [];
+
+const SIZE_LIKE_NAME = /^\s*[0-9]*\s*(g|kg|grams?|kgs?|ml|milli[\s-]?liters?|l|lit[ea]rs?|cm|inch|in|pack|pcs|pieces?|units?|nos)\b\s*$/i;
 
 function getHighlightIcon(title = "") {
   const t = (title || "").toLowerCase();
@@ -343,6 +343,15 @@ function ProductDetails({
     return null;
   }, [configuredVariantGroups, selectedOptionIdMap]);
 
+  const activeProductName = useMemo(() => {
+    const v = activeSelectedOption?.variantObj;
+    const vName = v?.name ? String(v.name).trim() : "";
+    if (vName && !SIZE_LIKE_NAME.test(vName) && vName.toLowerCase() !== String(product.title).toLowerCase()) {
+      return vName;
+    }
+    return product.title;
+  }, [activeSelectedOption, product.title]);
+
   useEffect(() => {
     if (activeSelectedOption) {
       const varImgs = (activeSelectedOption.variantObj?.images || [])
@@ -446,9 +455,124 @@ function ProductDetails({
   const [locationSearchInput, setLocationSearchInput] = useState("");
   const [estimatedDeliveryDate] = useState("25 July 2026");
 
-  // Customer Says Expand State
+  // Logged-in delivery address (show the profile's default/primary address).
+  const [isUserSignedIn, setIsUserSignedIn] = useState(() => Boolean(localStorage.getItem("accessToken")));
+  const [userAddress, setUserAddress] = useState(null);
+  const [addressLoading, setAddressLoading] = useState(false);
+
+  useEffect(() => {
+    if (!isUserSignedIn) {
+      (async () => {
+        setUserAddress(null);
+        setAddressLoading(false);
+      })();
+      return undefined;
+    }
+    let cancelled = false;
+    (async () => {
+      setAddressLoading(true);
+      try {
+        const defaultRes = await api.get("/profile/addresses/default", { timeout: 30000 });
+        let addr = defaultRes.data?.address || null;
+        if (!addr) {
+          const allRes = await api.get("/profile/addresses", { timeout: 30000 });
+          addr = allRes.data?.addresses?.[0] || null;
+        }
+        if (!cancelled) setUserAddress(addr || null);
+      } catch {
+        if (!cancelled) setUserAddress(null);
+      }
+      if (!cancelled) setAddressLoading(false);
+    })();
+    const onUnauthorized = () => setIsUserSignedIn(false);
+    window.addEventListener("unauthorized", onUnauthorized);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("unauthorized", onUnauthorized);
+    };
+  }, [isUserSignedIn]);
+
+  const deliveryAddressText = userAddress
+    ? [
+        userAddress.houseFlat,
+        userAddress.streetArea,
+        userAddress.landmark,
+      ]
+        .filter(Boolean)
+        .join(", ") +
+      (userAddress.city || userAddress.state || userAddress.pincode
+        ? `, ${[userAddress.city, userAddress.state].filter(Boolean).join(", ")}${userAddress.pincode ? ` - ${userAddress.pincode}` : ""}`
+        : "")
+    : "";
+
+  const handleDeliveryClick = () => {
+    if (!isUserSignedIn) {
+      navigate("/signin");
+      return;
+    }
+    navigate("/account");
+  };
+
+  // Live customer reviews + rating summary
+  const [reviews, setReviews] = useState([]);
+  const [reviewsLoading, setReviewsLoading] = useState(false);
+  const [ratingSummary, setRatingSummary] = useState(() => ({
+    average: 0,
+    total: 0,
+    distribution: [5, 4, 3, 2, 1].map((star) => ({ star, count: 0 })),
+  }));
+
+  const activeVariantSku = activeSelectedOption?.variantObj?.sku || "";
+  const [reviewVariantOverridden, setReviewVariantOverride] = useState(false);
   const [showAllCustomerSays, setShowAllCustomerSays] = useState(false);
   const [showMoreFirstReviewImages, setShowMoreFirstReviewImages] = useState(false);
+
+  const reviewFilterSku = reviewVariantOverridden ? "" : activeVariantSku;
+
+  useEffect(() => {
+    (async () => {
+      setReviewVariantOverride(false);
+      setShowAllCustomerSays(false);
+      setShowMoreFirstReviewImages(false);
+    })();
+  }, [activeVariantSku]);
+
+  useEffect(() => {
+    const targetId = selected._id || selected.id || slug;
+    if (!targetId) return;
+    (async () => {
+      setReviewsLoading(true);
+      try {
+        const { data } = await api.get(`/reviews/product/${encodeURIComponent(targetId)}`, {
+          params: {
+            limit: 50,
+            ...(reviewFilterSku ? { variant: reviewFilterSku } : {}),
+          },
+          timeout: 30000,
+        });
+        if (data.success) {
+          setReviews(Array.isArray(data.data) ? data.data : []);
+          if (data.ratingSummary) setRatingSummary(data.ratingSummary);
+        }
+      } catch {
+        /* keep UI graceful if reviews are unavailable */
+      }
+      setReviewsLoading(false);
+    })();
+  }, [selected._id, selected.id, slug, reviewFilterSku]);
+
+  const hasVariantReviewFilter = Boolean(reviewFilterSku);
+  const reviewAverage = hasVariantReviewFilter
+    ? ratingSummary.average
+    : ratingSummary.total > 0
+      ? ratingSummary.average
+      : Number(product.averageRating || product.rating || 0);
+  const reviewTotal = hasVariantReviewFilter
+    ? ratingSummary.total
+    : ratingSummary.total > 0
+      ? ratingSummary.total
+      : Number(product.reviewsCount || 0);
+  const displayedCustomerSays = showAllCustomerSays ? reviews : reviews.slice(0, 3);
 
   const activePrice = activeSelectedOption ? activeSelectedOption.price : product.price;
   const activeOldPrice = activeSelectedOption ? activeSelectedOption.oldPrice : product.oldPrice;
@@ -532,10 +656,6 @@ function ProductDetails({
       setIsLocationDrawerOpen(false);
     }
   };
-
-  const displayedCustomerSays = showAllCustomerSays
-    ? customerReviewsList
-    : customerReviewsList.slice(0, 3);
 
   return (
     <div className="w-full bg-[#fcfcfc] text-[#111111] font-sans antialiased">
@@ -635,18 +755,24 @@ function ProductDetails({
 
             {/* Product Title */}
             <h1 className="mt-4 text-4xl font-extrabold tracking-tight text-[#111111] sm:text-5xl">
-              {product.title}
+              {activeProductName}
             </h1>
 
             {/* Star Rating & Review Count */}
             <div className="mt-3 flex items-center gap-2.5">
               <div className="flex text-[#f9a825]">
                 {Array.from({ length: 5 }).map((_, i) => (
-                  <Star key={i} size={20} fill="currentColor" stroke="none" />
+                  <Star
+                    key={i}
+                    size={20}
+                    fill={i < Math.round(reviewAverage) ? "currentColor" : "none"}
+                    stroke={i < Math.round(reviewAverage) ? "none" : "currentColor"}
+                    className={i < Math.round(reviewAverage) ? "" : "text-[#dcd2c9]"}
+                  />
                 ))}
               </div>
               <span className="text-base font-semibold text-[#111111]">
-                4.8 ({product.reviewsCount} Reviews)
+                {reviewTotal > 0 ? `${reviewAverage.toFixed(1)} (${reviewTotal} Review${reviewTotal === 1 ? "" : "s"})` : "No reviews yet"}
               </span>
             </div>
 
@@ -702,7 +828,7 @@ function ProductDetails({
                               ) : (
                                 <img
                                   src={opt.image || product.mainImage}
-                                  alt={`${product.title} ${opt.label}`}
+                                  alt={`${activeProductName} ${opt.label}`}
                                   className="h-full w-full object-cover rounded-lg transition-transform duration-200 group-hover:scale-105"
                                 />
                               )}
@@ -777,16 +903,27 @@ function ProductDetails({
                       Selected Delivery Location
                     </span>
                     <span className="text-base font-extrabold text-[#111111] leading-snug line-clamp-1">
-                      {selectedLocation}
+                      {!isUserSignedIn
+                        ? "Enter delivery address"
+                        : addressLoading
+                          ? "Loading your address…"
+                          : userAddress
+                            ? deliveryAddressText
+                            : "Add your delivery address"}
                     </span>
+                    {!isUserSignedIn && (
+                      <span className="text-xs font-semibold text-gray-400">
+                        Login to set your delivery location
+                      </span>
+                    )}
                   </div>
                 </div>
                 <button
                   type="button"
-                  onClick={() => setIsLocationDrawerOpen(true)}
+                  onClick={handleDeliveryClick}
                   className="shrink-0 rounded-full bg-[#f0f4ff] px-4 py-2 text-xs font-extrabold text-[#2563eb] transition hover:bg-[#2563eb] hover:text-white"
                 >
-                  Change
+                  {!isUserSignedIn ? "Login / Add" : userAddress ? "Change" : "Add Address"}
                 </button>
               </div>
 
@@ -1132,54 +1269,60 @@ function ProductDetails({
           <div className="rounded-2xl border border-gray-200 bg-white p-7 shadow-sm">
             <h2 className="text-xl font-extrabold text-[#111111]">Customer Reviews</h2>
 
+            {activeVariantSku && (
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-[#fff7ef] px-3 py-2">
+                <p className="text-xs font-bold text-[#9b4518]">
+                  {reviewFilterSku
+                    ? `Showing reviews for ${activeProductName}`
+                    : "Showing all product reviews"}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setReviewVariantOverride((prev) => !prev)}
+                  className="text-xs font-extrabold text-[#2563eb] hover:underline"
+                >
+                  {reviewFilterSku
+                    ? "Show all reviews"
+                    : `Show only ${activeProductName} reviews`}
+                </button>
+              </div>
+            )}
+
             <div className="mt-5 flex items-center gap-7">
               <div>
-                <span className="text-6xl font-black text-[#111111]">{product.rating}</span>
+                <span className="text-6xl font-black text-[#111111]">
+                  {reviewTotal > 0 ? reviewAverage.toFixed(1) : "—"}
+                </span>
                 <div className="mt-1.5 flex text-[#f9a825]">
                   {Array.from({ length: 5 }).map((_, i) => (
-                    <Star key={i} size={18} fill="currentColor" stroke="none" />
+                    <Star
+                      key={i}
+                      size={18}
+                      fill={i < Math.round(reviewAverage) ? "currentColor" : "none"}
+                      stroke={i < Math.round(reviewAverage) ? "none" : "currentColor"}
+                      className={i < Math.round(reviewAverage) ? "" : "text-[#dcd2c9]"}
+                    />
                   ))}
                 </div>
-                <p className="mt-1.5 text-sm font-bold text-gray-500">{product.reviewsCount} Reviews</p>
+                <p className="mt-1.5 text-sm font-bold text-gray-500">
+                  {reviewTotal > 0 ? `${reviewTotal} Review${reviewTotal === 1 ? "" : "s"}` : "No reviews yet"}
+                </p>
               </div>
 
               {/* Progress Bars */}
               <div className="flex-1 space-y-2 text-sm font-semibold text-gray-600">
-                <div className="flex items-center gap-2.5">
-                  <span className="w-12 text-right">5 Star</span>
-                  <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-gray-100">
-                    <div className="h-full w-[80%] rounded-full bg-[#f96e15]" />
-                  </div>
-                  <span className="w-8 text-gray-400 font-medium">118</span>
-                </div>
-                <div className="flex items-center gap-2.5">
-                  <span className="w-12 text-right">4 Star</span>
-                  <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-gray-100">
-                    <div className="h-full w-[20%] rounded-full bg-[#f96e15]" />
-                  </div>
-                  <span className="w-8 text-gray-400 font-medium">24</span>
-                </div>
-                <div className="flex items-center gap-2.5">
-                  <span className="w-12 text-right">3 Star</span>
-                  <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-gray-100">
-                    <div className="h-full w-[8%] rounded-full bg-[#f96e15]" />
-                  </div>
-                  <span className="w-8 text-gray-400 font-medium">7</span>
-                </div>
-                <div className="flex items-center gap-2.5">
-                  <span className="w-12 text-right">2 Star</span>
-                  <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-gray-100">
-                    <div className="h-full w-[3%] rounded-full bg-[#f96e15]" />
-                  </div>
-                  <span className="w-8 text-gray-400 font-medium">2</span>
-                </div>
-                <div className="flex items-center gap-2.5">
-                  <span className="w-12 text-right">1 Star</span>
-                  <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-gray-100">
-                    <div className="h-full w-[2%] rounded-full bg-[#f96e15]" />
-                  </div>
-                  <span className="w-8 text-gray-400 font-medium">1</span>
-                </div>
+                {ratingSummary.distribution.map((d) => {
+                  const pct = reviewTotal > 0 ? Math.round((d.count / reviewTotal) * 100) : 0;
+                  return (
+                    <div className="flex items-center gap-2.5" key={d.star}>
+                      <span className="w-12 text-right">{d.star} Star</span>
+                      <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-gray-100">
+                        <div className="h-full rounded-full bg-[#f96e15]" style={{ width: `${pct}%` }} />
+                      </div>
+                      <span className="w-8 text-gray-400 font-medium">{d.count}</span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </div>
@@ -1190,114 +1333,116 @@ function ProductDetails({
               <h2 className="text-xl font-extrabold text-[#111111]">Customer Says</h2>
 
               <div className="mt-5 space-y-5 transition-all duration-300">
-                {displayedCustomerSays.map((rev, idx) => (
-                  <div
-                    key={idx}
-                    className="flex flex-col gap-2.5 border-b border-gray-100 pb-5 last:border-0 last:pb-0 animate-in fade-in duration-300"
-                  >
-                    {/* Header: Avatar, Name, Date */}
-                    <div className="flex items-center gap-3">
-                      <img
-                        src={rev.avatar}
-                        alt={rev.name}
-                        className="h-10 w-10 rounded-full object-cover"
-                      />
-                      <div>
-                        <h4 className="text-sm font-extrabold text-[#111111]">{rev.name}</h4>
-                        <span className="text-xs font-medium text-gray-400">{rev.date}</span>
-                      </div>
-                    </div>
+                {reviewsLoading ? (
+                  <div className="flex items-center justify-center py-10 text-gray-400">
+                    <RefreshCw size={20} className="animate-spin" />
+                  </div>
+                ) : displayedCustomerSays.length === 0 ? (
+                  <div className="py-10 text-center">
+                    <p className="text-sm font-semibold text-gray-500">
+                      {reviewFilterSku ? `No reviews for ${activeProductName} yet.` : "No reviews yet."}
+                    </p>
+                    <p className="mt-1 text-sm font-medium text-gray-400">Be the first to review this product after your purchase is delivered.</p>
+                  </div>
+                ) : (
+                  displayedCustomerSays.map((rev, idx) => {
+                    const revUser = rev.userId || {};
+                    const revName = revUser.fullName || "Verified Customer";
+                    const revAvatar = revUser.avatar || "";
+                    const revDate = rev.createdAt
+                      ? new Date(rev.createdAt).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })
+                      : "";
+                    const revText = rev.comment || rev.body || "";
+                    const revImgs = Array.isArray(rev.images) ? rev.images : [];
 
-                    {/* Star Rating */}
-                    <div className="flex text-[#f9a825]">
-                      {Array.from({ length: rev.rating }).map((_, i) => (
-                        <Star key={i} size={14} fill="currentColor" stroke="none" />
-                      ))}
-                    </div>
-
-                    {/* Review Text */}
-                    <p className="text-sm font-medium leading-relaxed text-gray-800">{rev.text}</p>
-
-                    {/* Customer Uploaded Product Images BELOW Review Text */}
-                    {idx === 0 ? (
-                      /* First Review Gallery with +2 indicator */
-                      <div className="mt-1 flex items-center gap-2.5">
-                        <img
-                          src={thumb1}
-                          alt="Review Image 1"
-                          className="h-14 w-14 rounded-xl border border-gray-200 object-cover"
-                        />
-                        <img
-                          src={thumb2}
-                          alt="Review Image 2"
-                          className="h-14 w-14 rounded-xl border border-gray-200 object-cover"
-                        />
-
-                        {!showMoreFirstReviewImages ? (
-                          <button
-                            type="button"
-                            onClick={() => setShowMoreFirstReviewImages(true)}
-                            className="group relative h-14 w-14 overflow-hidden rounded-xl border border-gray-200 focus:outline-none"
-                          >
-                            <img
-                              src={thumb3}
-                              alt="Review Image 3"
-                              className="h-full w-full object-cover brightness-50 transition group-hover:scale-105"
-                            />
-                            <span className="absolute inset-0 flex items-center justify-center text-sm font-black text-white">
-                              +2
+                    return (
+                      <div
+                        key={rev._id || `${revName}-${idx}`}
+                        className="flex flex-col gap-2.5 border-b border-gray-100 pb-5 last:border-0 last:pb-0 animate-in fade-in duration-300"
+                      >
+                        {/* Header: Avatar, Name, Date */}
+                        <div className="flex items-center gap-3">
+                          {revAvatar ? (
+                            <img src={revAvatar} alt={revName} className="h-10 w-10 rounded-full object-cover" />
+                          ) : (
+                            <span className="grid h-10 w-10 place-items-center rounded-full bg-gradient-to-br from-[#f96e15] to-[#f6a821] text-sm font-black text-white">
+                              {(revName || "?").charAt(0).toUpperCase()}
                             </span>
-                          </button>
-                        ) : (
-                          <>
-                            <img
-                              src={thumb3}
-                              alt="Review Image 3"
-                              className="h-14 w-14 rounded-xl border border-gray-200 object-cover animate-in fade-in"
-                            />
-                            <img
-                              src={thumb4}
-                              alt="Review Image 4"
-                              className="h-14 w-14 rounded-xl border border-gray-200 object-cover animate-in fade-in"
-                            />
-                          </>
+                          )}
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h4 className="text-sm font-extrabold text-[#111111]">{revName}</h4>
+                              {rev.isVerifiedPurchase && (
+                                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-black text-emerald-600">
+                                  <CheckCircle2 size={10} /> Verified Purchase
+                                </span>
+                              )}
+                            </div>
+                            <span className="text-xs font-medium text-gray-400">{revDate}</span>
+                          </div>
+                        </div>
+
+                        {/* Star Rating */}
+                        <div className="flex text-[#f9a825]">
+                          {Array.from({ length: 5 }).map((_, i) => (
+                            <Star key={i} size={14} fill={i < rev.rating ? "currentColor" : "none"} stroke={i < rev.rating ? "none" : "currentColor"} className={i < rev.rating ? "" : "text-[#e7ded5]"} />
+                          ))}
+                        </div>
+
+                        {/* Review Text */}
+                        <p className="text-sm font-medium leading-relaxed text-gray-800">{revText}</p>
+
+                        {/* Customer Uploaded Product Images BELOW Review Text */}
+                        {revImgs.length > 0 && (
+                          <div className="mt-1 flex items-center gap-2.5">
+                            {revImgs.slice(0, 2).map((imgUrl, i) => (
+                              <img key={i} src={imgUrl} alt={`Review image ${i + 1}`} className="h-14 w-14 rounded-xl border border-gray-200 object-cover" />
+                            ))}
+                            {idx === 0 && revImgs.length > 2 && !showMoreFirstReviewImages && (
+                              <button
+                                type="button"
+                                onClick={() => setShowMoreFirstReviewImages(true)}
+                                className="group relative h-14 w-14 overflow-hidden rounded-xl border border-gray-200 focus:outline-none"
+                              >
+                                <img src={revImgs[2]} alt="More review images" className="h-full w-full object-cover brightness-50 transition group-hover:scale-105" />
+                                <span className="absolute inset-0 flex items-center justify-center text-sm font-black text-white">
+                                  +{revImgs.length - 2}
+                                </span>
+                              </button>
+                            )}
+                            {idx === 0 && showMoreFirstReviewImages &&
+                              revImgs.slice(2, 5).map((imgUrl, i) => (
+                                <img key={`more-${i}`} src={imgUrl} alt={`Review image ${i + 3}`} className="h-14 w-14 rounded-xl border border-gray-200 object-cover animate-in fade-in" />
+                              ))}
+                          </div>
                         )}
                       </div>
-                    ) : (
-                      /* Subsequent Reviews: Product image BELOW text */
-                      rev.productImage && (
-                        <div className="mt-1">
-                          <img
-                            src={rev.productImage}
-                            alt="Customer Uploaded Review"
-                            className="h-14 w-14 rounded-xl border border-gray-200 object-cover"
-                          />
-                        </div>
-                      )
-                    )}
-                  </div>
-                ))}
+                    );
+                  })
+                )}
               </div>
             </div>
 
             {/* Expandable See More / See Less Button */}
-            <div className="mt-6 text-center border-t border-gray-100 pt-4">
-              <button
-                type="button"
-                onClick={() => setShowAllCustomerSays((prev) => !prev)}
-                className="inline-flex items-center gap-1.5 text-sm font-bold text-[#111111] hover:text-[#f96e15] transition-colors"
-              >
-                {showAllCustomerSays ? (
-                  <>
-                    See Less <ChevronUp size={16} />
-                  </>
-                ) : (
-                  <>
-                    See More <ChevronDown size={16} />
-                  </>
-                )}
-              </button>
-            </div>
+            {reviews.length > 3 && (
+              <div className="mt-6 text-center border-t border-gray-100 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setShowAllCustomerSays((prev) => !prev)}
+                  className="inline-flex items-center gap-1.5 text-sm font-bold text-[#111111] hover:text-[#f96e15] transition-colors"
+                >
+                  {showAllCustomerSays ? (
+                    <>
+                      See Less <ChevronUp size={16} />
+                    </>
+                  ) : (
+                    <>
+                      See More <ChevronDown size={16} />
+                    </>
+                  )}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </section>

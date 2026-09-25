@@ -189,7 +189,13 @@ function OffersCoupons({ onAdminLogout }) {
           _id: c._id,
           name: c.code,
           subtitle: c.name || c.description || "",
-          type: c.discountType === "Percentage" ? `${c.discountValue}% Percent` : "Free Delivery",
+          type: c.offerType === "scratch_card"
+            ? "Scratch Card"
+            : c.offerType === "free_delivery" || c.discountType === "Free Delivery"
+              ? "Free Delivery"
+              : c.discountType === "Percentage"
+                ? `${c.discountValue}% Percent`
+                : `${c.discountValue} OFF`,
           redemption: `${c.usedCount || 0} uses`,
           progress: c.usageLimit > 0 ? `${Math.round(((c.usedCount || 0) / c.usageLimit) * 100)}%` : "0%",
           validity: `${formatCouponDate(c.startsAt)} – ${formatCouponDate(c.expiresAt)}`,
@@ -201,6 +207,9 @@ function OffersCoupons({ onAdminLogout }) {
           perUserLimit: c.perUserLimit,
           discountValue: c.discountValue,
           discountType: c.discountType,
+          offerType: c.offerType,
+          scratchRules: c.scratchRules || [],
+          freeDeliveryDistricts: c.freeDeliveryDistricts || [],
           startsAt: c.startsAt,
           expiresAt: c.expiresAt,
         }));
@@ -977,6 +986,55 @@ function ViewOfferModal({ loading, coupon, onClose }) {
                   ) : null}
                 </div>
               </div>
+
+              {coupon.scratchRules?.length ? (
+                <div className="rounded-[10px] border border-[#eaded6] bg-[#fffaf6] p-4">
+                  <p className="text-[9px] font-black uppercase tracking-[0.12em] text-[#b5480b]">
+                    Scratch Card Rules
+                  </p>
+                  <div className="mt-3 space-y-2">
+                    {coupon.scratchRules.map((rule, index) => (
+                      <div
+                        className="rounded-[8px] border border-[#eaded6] bg-white px-3 py-2 text-[12px] font-bold text-[#21150f]"
+                        key={`${rule.basis}-${rule.threshold}-${index}`}
+                      >
+                        <span className="text-[#b5480b]">Rule {index + 1}:</span>{" "}
+                        {rule.basis === "quantity"
+                          ? `${rule.threshold}+ item${rule.threshold === 1 ? "" : "s"}`
+                          : `Order amount ₹${rule.threshold}+`}{" "}
+                        {rule.discountType === "Fixed"
+                          ? `→ ₹${rule.discountValue} OFF`
+                          : `→ ${rule.discountValue}% OFF`}
+                        {rule.label ? <span className="block text-[11px] font-semibold text-[#8a7a71]">{rule.label}</span> : null}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {coupon.discountType === "Free Delivery" ? (
+                <div className="rounded-[10px] border border-[#eaded6] bg-[#fffaf6] p-4">
+                  <p className="text-[9px] font-black uppercase tracking-[0.12em] text-[#b5480b]">
+                    Free Delivery Districts
+                  </p>
+                  <div className="mt-3">
+                    {coupon.freeDeliveryDistricts?.length ? (
+                      <div className="flex flex-wrap gap-2">
+                        {coupon.freeDeliveryDistricts.map((district) => (
+                          <span
+                            className="rounded-full bg-[#f1ffd2] px-3 py-1 text-[11px] font-black text-[#597219]"
+                            key={district}
+                          >
+                            {district}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-[12px] font-bold text-[#8a7a71]">All districts (free delivery everywhere)</p>
+                    )}
+                  </div>
+                </div>
+              ) : null}
 
               <div className="rounded-[10px] border border-[#eaded6] bg-[#fffaf6] p-4">
                 <p className="text-[9px] font-black uppercase tracking-[0.12em] text-[#b5480b]">

@@ -38,6 +38,42 @@ const STATUS_DISPLAY: Record<string, string> = {
   'returned': 'Returned',
 };
 
+const ACTIVE_ORDER_STATUSES = ['pending_approval', 'accepted', 'packed', 'shipped', 'in_transit', 'out_for_delivery', 'delayed'];
+
+/**
+ * Lightweight per-customer order stats via a single indexed $group pass.
+ * Replaces the old client-side approach that downloaded up to 200 full
+ * documents (with per-item populates) — the source of the 15s timeouts.
+ */
+export const getMyOrderStats = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    if (!req.user?.userId) {
+      return sendError(res, 'Authentication required', 401);
+    }
+
+    const rows = await Order.aggregate([
+      { $match: { userId: new Types.ObjectId(req.user.userId) } },
+      { $group: { _id: '$status', count: { $sum: 1 } } },
+    ]);
+
+    const counts: Record<string, number> = {};
+    for (const row of rows) counts[row._id || 'unknown'] = row.count;
+
+    const num = (s: string) => counts[s] || 0;
+    const stats = {
+      total: rows.reduce((sum, r) => sum + r.count, 0),
+      ongoing: ACTIVE_ORDER_STATUSES.reduce((sum, s) => sum + num(s), 0),
+      completed: num('delivered'),
+      cancelled: num('cancelled') + num('returned'),
+      counts,
+    };
+
+    sendSuccess(res, { data: stats });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const createOrder = async (req: AuthRequest, res: Response, next: NextFunction) => {
   try {
     if (!req.user?.userId) {

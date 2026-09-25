@@ -85,7 +85,7 @@ export const getProducts = async (req: AuthRequest, res: Response, next: NextFun
       .sort(sortOption)
       .skip(skip)
       .limit(limit)
-      .select('name slug sku barcode brand category subCategory mrpPrice sellingPrice costPrice quantity warehouseStock reservedQuantity publishStatus status isFeatured thumbnail badges weight unitType createdAt updatedAt')
+      .select('name slug sku barcode brand category subCategory mrpPrice sellingPrice costPrice quantity warehouseStock reservedQuantity publishStatus status isFeatured thumbnail badges weight unitType createdAt updatedAt averageRating reviewCount')
       .populate('category', 'name slug')
       .lean();
     const total = await Product.countDocuments(filter);

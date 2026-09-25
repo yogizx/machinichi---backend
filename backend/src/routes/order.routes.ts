@@ -9,6 +9,7 @@ import {
   getAllOrders,
   getOrderStatusCounts,
   addTracking,
+  getMyOrderStats,
 } from '../controllers/order.controller';
 import { downloadInvoice, downloadShippingLabel } from '../controllers/orderPdf.controller';
 import { adminMiddleware } from '../middlewares/auth.middleware';
@@ -16,6 +17,7 @@ import { adminMiddleware } from '../middlewares/auth.middleware';
 const router = Router();
 
 router.get('/my-orders', authMiddleware, getMyOrders);
+router.get('/stats', authMiddleware, getMyOrderStats);
 router.get('/admin/all', authMiddleware, adminMiddleware, getAllOrders);
 router.get('/admin/status-counts', authMiddleware, adminMiddleware, getOrderStatusCounts);
 router.get('/track/:orderId', getOrderById); // public tracking by orderId string

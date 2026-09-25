@@ -51,17 +51,25 @@ export function PaymentBadge({ payment }) {
   );
 }
 
-export function ActionMenu({ machineStatus, onAction }) {
+export function ActionMenu({ machineStatus, onAction, anchor }) {
   const actions = VALID_ACTIONS[machineStatus] || [];
+  const menuStyle = anchor
+    ? {
+        position: "fixed",
+        left: Math.max(8, Math.min(anchor.left - 192, (typeof window !== "undefined" ? window.innerWidth : 1200) - 200)),
+        top: anchor.top + 4,
+        zIndex: 60,
+      }
+    : { position: "absolute", right: 0, top: "2.5rem", zIndex: 30 };
   if (!actions.length) return (
-    <div className="absolute right-0 top-10 z-30 w-48 rounded-xl border border-[#efe5dc] bg-white shadow-xl p-3">
+    <div className="rounded-xl border border-[#efe5dc] bg-white shadow-xl p-3" style={menuStyle}>
       <p className="text-[12px] font-bold text-[#796d66]">
         {machineStatus === "delivered" ? "✓ Order Delivered" : machineStatus === "cancelled" ? "✕ Cancelled" : "No actions available"}
       </p>
     </div>
   );
   return (
-    <div className="absolute right-0 top-10 z-30 w-48 overflow-hidden rounded-xl border border-[#efe5dc] bg-white shadow-xl">
+    <div className="w-48 overflow-hidden rounded-xl border border-[#efe5dc] bg-white shadow-xl" style={menuStyle}>
       {actions.map((a) => (
         <button key={a.value} onClick={() => onAction(a.value)} type="button"
           className={`block w-full px-4 py-3 text-left text-[12.5px] font-black transition hover:bg-[#faf7f4] ${a.danger ? "text-rose-600" : a.primary ? "text-[#fd761a]" : "text-[#3a1100]"}`}>

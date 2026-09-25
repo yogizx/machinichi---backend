@@ -21,6 +21,7 @@ import {
   X,
   XCircle,
   Info,
+  ImagePlus,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
@@ -157,6 +158,9 @@ function Order() {
   const [stats, setStats] = useState({ total: 0, ongoing: 0, completed: 0, cancelled: 0 });
   const [statsLoading, setStatsLoading] = useState(true);
 
+  const [myReviews, setMyReviews] = useState({});
+  const [reviewTarget, setReviewTarget] = useState(null);
+
   // Debounce search 500ms before firing the backend request
   useEffect(() => {
     const handler = setTimeout(() => {
@@ -166,23 +170,60 @@ function Order() {
     return () => clearTimeout(handler);
   }, [searchTerm]);
 
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const { data } = await api.get("/reviews/my", { timeout: 30000 });
+        if (!active) return;
+        if (data.success && Array.isArray(data.data)) {
+          const map = {};
+          data.data.forEach((r) => {
+            const pid = r.productId?._id || r.productId;
+            if (pid) map[pid] = r;
+          });
+          setMyReviews(map);
+        }
+      } catch (e) {
+        if (!active) return;
+        console.error("Failed to load my reviews", e);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const orderStatsFromList = (list) => ({
+    total: list.length,
+    ongoing: list.filter((o) => ACTIVE_STATUSES.includes(o.status)).length,
+    completed: list.filter((o) => o.status === "delivered").length,
+    cancelled: list.filter((o) => o.status === "cancelled" || o.status === "returned").length,
+  });
+
   const fetchStats = async () => {
     setStatsLoading(true);
     try {
-      const { data } = await api.get("/orders/my-orders", { params: { limit: 1 } });
-      if (data.success) {
-        const total = data.pagination?.total || data.data?.length || 0;
-        const { data: full } = await api.get("/orders/my-orders", { params: { limit: total > 0 ? Math.min(total, 200) : 10 } });
-        const all = full.data || [];
+      const { data } = await api.get("/orders/stats", { timeout: 30000 });
+      if (data.success && data.data && typeof data.data.total === "number") {
         setStats({
-          total: total,
-          ongoing: all.filter((o) => ACTIVE_STATUSES.includes(o.status)).length,
-          completed: all.filter((o) => o.status === "delivered").length,
-          cancelled: all.filter((o) => o.status === "cancelled" || o.status === "returned").length,
+          total: data.data.total,
+          ongoing: data.data.ongoing,
+          completed: data.data.completed,
+          cancelled: data.data.cancelled,
         });
       }
     } catch (e) {
       console.error("Stats fetch failed", e);
+      // Offline-safe fallback: derive stats from the currently loaded page.
+      try {
+        const { data } = await api.get("/orders/my-orders", { params: { limit: 10 }, timeout: 30000 });
+        if (data.success && Array.isArray(data.data) && data.data.length > 0) {
+          setStats(orderStatsFromList(data.data));
+        }
+      } catch {
+        /* keep zeros if the backend is unavailable */
+      }
     }
     setStatsLoading(false);
   };
@@ -195,7 +236,7 @@ function Order() {
       if (activeFilter === "Completed") params.status = "delivered";
       else if (activeFilter === "Cancelled") params.status = "cancelled";
       if (query) params.search = query;
-      const { data } = await api.get("/orders/my-orders", { params });
+      const { data } = await api.get("/orders/my-orders", { params, timeout: 30000 });
       if (data.success) {
         let list = data.data || [];
         if (activeFilter === "Ongoing") {
@@ -216,6 +257,7 @@ function Order() {
 
   useEffect(() => {
     fetchStats();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -495,6 +537,8 @@ function Order() {
                     const displayId = order.orderId || `#${(order._id || "").slice(-6).toUpperCase()}`;
                     const firstItem = items[0] || {};
                     const extraCount = items.length - 1;
+                    const firstProductId = firstItem.productId?._id || firstItem.productId || "";
+                    const firstProductReviewed = Boolean(myReviews[firstProductId]);
 
                     return (
                       <motion.article
@@ -629,17 +673,26 @@ function Order() {
                                 </motion.button>
                               )}
 
-                              {status === "delivered" && (
+                              {status === "delivered" && (firstProductReviewed ? (
+                                <motion.button
+                                  whileHover={{ y: -2 }}
+                                  whileTap={{ scale: 0.96 }}
+                                  className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-4 text-[12px] font-black text-emerald-700 shadow-[0_1px_3px_rgba(0,0,0,0.03)]"
+                                  type="button"
+                                >
+                                  <Check size={13} strokeWidth={3} /> Reviewed
+                                </motion.button>
+                              ) : (
                                 <motion.button
                                   whileHover={{ y: -2 }}
                                   whileTap={{ scale: 0.96 }}
                                   className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-[#cfc1b5] bg-white px-4 text-[12px] font-black text-[#5c514b] shadow-[0_1px_3px_rgba(0,0,0,0.03)] transition-all hover:border-amber-400 hover:text-amber-600 hover:shadow-[0_4px_12px_rgba(251,191,36,0.12)] active:translate-y-0"
-                                  onClick={() => navigate(firstItem.productId?.slug ? `/product/${firstItem.productId.slug}` : "/product")}
+                                  onClick={() => setReviewTarget(order)}
                                   type="button"
                                 >
-                                  <Star size={13} className="text-amber-500" /> Review
+                                  <Star size={13} className="text-amber-500" /> Rate & Review
                                 </motion.button>
-                              )}
+                              ))}
 
                               {!["cancelled", "returned"].includes(status) && (
                                 <motion.button
@@ -755,6 +808,22 @@ function Order() {
       <AnimatePresence>
         {cancelTarget && <CancelOrderModal order={cancelTarget} onClose={() => setCancelTarget(null)} onSubmit={(reason) => handleCancelOrder(cancelTarget, reason)} />}
       </AnimatePresence>
+
+      <AnimatePresence>
+        {reviewTarget && (
+          <ReviewModal
+            order={reviewTarget}
+            onClose={() => setReviewTarget(null)}
+            onSuccess={(review) => {
+              const pid = review?.productId?._id || review?.productId;
+              if (pid) {
+                setMyReviews((prev) => ({ ...prev, [pid]: review }));
+                fetchStats();
+              }
+            }}
+          />
+        )}
+      </AnimatePresence>
     </main>
   );
 }
@@ -816,6 +885,228 @@ function CancelOrderModal({ order, onClose, onSubmit }) {
             </button>
           </div>
         </div>
+      </motion.section>
+    </motion.div>
+  );
+}
+
+function ReviewModal({ order, onClose, onSuccess }) {
+  const item = (order.items || [])[0] || {};
+  const productId = item.productId?._id || item.productId || "";
+  const productName = item.productId?.name || item.name || "Product";
+  const productImage = item.productId?.images?.[0]?.url || item.image || "";
+
+  const [rating, setRating] = useState(0);
+  const [hover, setHover] = useState(0);
+  const [comment, setComment] = useState("");
+  const [images, setImages] = useState([]);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [success, setSuccess] = useState(false);
+  const [error, setError] = useState("");
+  const [submittedReview, setSubmittedReview] = useState(null);
+
+  const handleImageFiles = async (fileList) => {
+    const files = Array.from(fileList || []).slice(0, Math.max(0, 5 - images.length));
+    if (files.length === 0) return;
+    setError("");
+    setUploadingImage(true);
+    const uploaded = [];
+    for (const file of files) {
+      try {
+        const fd = new FormData();
+        fd.append("file", file);
+        const { data } = await api.post("/upload", fd, {
+          headers: { "Content-Type": "multipart/form-data" },
+          timeout: 30000,
+        });
+        if (data?.success && data?.url) uploaded.push(data.url);
+      } catch {
+        setError("Failed to upload one of the images. Please try again.");
+      }
+    }
+    setImages((prev) => [...prev, ...uploaded].slice(0, 5));
+    setUploadingImage(false);
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (rating === 0) { setError("Please select a rating"); return; }
+    const trimmed = comment.trim();
+    if (trimmed.length < 5) { setError("Please write a review (at least 5 characters)"); return; }
+    setSubmitting(true);
+    setError("");
+    try {
+      const { data } = await api.post(
+        "/reviews",
+        {
+          productId,
+          rating,
+          title: trimmed.slice(0, 100),
+          comment: trimmed,
+          images,
+          ...(item.variantSize ? { variantSize: item.variantSize } : {}),
+        },
+        { timeout: 30000 }
+      );
+      if (data.success) {
+        setSuccess(true);
+        setSubmittedReview(data.data || null);
+      }
+    } catch (err) {
+      setError(err.response?.data?.message || "Failed to submit review. Please try again.");
+    }
+    setSubmitting(false);
+  };
+
+  const closeAfterSuccess = () => {
+    onSuccess(submittedReview || { productId });
+    onClose();
+  };
+
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-50 flex items-center justify-center bg-[#21150f]/50 px-4 py-5 backdrop-blur-[4px]">
+      <motion.section initial={{ scale: 0.95, y: 10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 10 }} className="w-full max-w-[520px] overflow-hidden rounded-2xl border border-[#efe5dc] bg-white shadow-2xl">
+        {success ? (
+          <div className="px-8 py-10 text-center">
+            <motion.div
+              initial={{ scale: 0.6, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              transition={{ type: "spring", stiffness: 260, damping: 18 }}
+              className="mx-auto grid h-16 w-16 place-items-center rounded-full bg-emerald-100 text-emerald-600"
+            >
+              <Check size={32} strokeWidth={3} />
+            </motion.div>
+            <h2 className="mt-5 font-serif text-[22px] font-black text-[#3a1100]">Review submitted successfully!</h2>
+            <p className="mt-2 text-[13.5px] font-medium text-[#796d66]">
+              Thank you for sharing your feedback on {productName}. It will now appear on the product page.
+            </p>
+            {submittedReview?.rating > 0 && (
+              <div className="mt-4 flex justify-center">
+                <div className="flex items-center gap-1">
+                  {[1, 2, 3, 4, 5].map((star) => (
+                    <Star
+                      key={star}
+                      size={22}
+                      className={star <= (submittedReview?.rating || 0) ? "fill-[#ff8b54] text-[#ff8b54]" : "text-[#d4cac2]"}
+                      strokeWidth={1.5}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+            <button
+              onClick={closeAfterSuccess}
+              type="button"
+              className="mt-7 inline-flex h-11 items-center gap-2 rounded-2xl bg-gradient-to-r from-[#fd761a] to-[#e86710] px-8 text-[13px] font-black text-white shadow-[0_4px_16px_rgba(253,118,26,0.25)] transition-all hover:shadow-[0_8px_24px_rgba(253,118,26,0.35)]"
+            >
+              Done
+            </button>
+          </div>
+        ) : (
+          <>
+            <header className="flex items-center justify-between border-b border-[#f5eee8] bg-[#faf7f4] px-6 py-4">
+              <div className="flex items-center gap-3">
+                {productImage && <img src={productImage} alt="" className="h-10 w-10 rounded-lg border border-[#efe5dc] object-cover" />}
+                <div>
+                  <h2 className="text-[15px] font-black text-[#3a1100]">Rate & Review</h2>
+                  <p className="max-w-[300px] truncate text-[11px] font-bold text-[#9a8b82]">{productName}</p>
+                </div>
+              </div>
+              <button onClick={onClose} type="button" className="grid h-8 w-8 place-items-center rounded-lg text-gray-400 transition hover:bg-gray-100 hover:text-gray-700">
+                <X size={16} />
+              </button>
+            </header>
+            <form className="px-6 py-5" onSubmit={handleSubmit}>
+              <div className="mb-1 flex items-center justify-between">
+                <p className="text-[12px] font-bold text-[#9a8b82]">Your Rating</p>
+                {rating > 0 && <span className="text-[12px] font-black text-[#fd761a]">{rating}/5</span>}
+              </div>
+              <div className="flex items-center gap-1">
+                {[1, 2, 3, 4, 5].map((star) => (
+                  <button
+                    key={star}
+                    type="button"
+                    className="p-1 transition hover:scale-110"
+                    onClick={() => setRating(star)}
+                    onMouseEnter={() => setHover(star)}
+                    onMouseLeave={() => setHover(0)}
+                    aria-label={`${star} star`}
+                  >
+                    <Star
+                      size={30}
+                      className={star <= (hover || rating) ? "fill-[#ff8b54] text-[#ff8b54]" : "text-[#d4cac2]"}
+                      strokeWidth={1.5}
+                    />
+                  </button>
+                ))}
+              </div>
+
+              <label className="mt-5 block text-[12px] font-bold text-[#9a8b82]">Your Review</label>
+              <textarea
+                className="mt-2 min-h-[110px] w-full rounded-xl border border-[#e5d8cd] bg-[#fdfbf9] px-4 py-3 text-[13.5px] font-medium text-[#211713] outline-none placeholder:text-[#c7bab0] transition-colors focus:border-[#fd761a] focus:bg-white"
+                value={comment}
+                onChange={(e) => setComment(e.target.value)}
+                placeholder="Share your experience with this product..."
+                maxLength={2000}
+              />
+
+              {/* Attach review images (Cloudinary) */}
+              <label className="mt-5 block text-[12px] font-bold text-[#9a8b82]">
+                Add Photos <span className="font-semibold text-[#c7bab0]">(optional, up to 5)</span>
+              </label>
+              <div className="mt-2 flex flex-wrap items-center gap-3">
+                <label className={`grid h-20 w-20 cursor-pointer place-items-center rounded-xl border-2 border-dashed transition-colors ${images.length >= 5 ? "cursor-not-allowed border-[#e5d8cd] text-[#d0c4ba]" : "border-[#cfc1b5] text-[#b0a399] hover:border-[#fd761a] hover:text-[#fd761a]"}`}>
+                  {uploadingImage ? <Loader2 size={18} className="animate-spin" /> : (
+                    <div className="text-center">
+                      <ImagePlus size={18} className="mx-auto" />
+                      <span className="mt-0.5 block text-[9px] font-black">Add Photo</span>
+                    </div>
+                  )}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    className="hidden"
+                    disabled={images.length >= 5 || uploadingImage}
+                    onChange={(e) => {
+                      handleImageFiles(e.target.files);
+                      e.target.value = "";
+                    }}
+                  />
+                </label>
+                {images.map((img, i) => (
+                  <motion.div initial={{ opacity: 0, scale: 0.85 }} animate={{ opacity: 1, scale: 1 }} key={`${img}-${i}`} className="relative h-20 w-20 overflow-hidden rounded-xl border border-[#efe5dc]">
+                    <img src={img} alt={`Review photo ${i + 1}`} className="h-full w-full object-cover" />
+                    <button
+                      type="button"
+                      onClick={() => setImages((prev) => prev.filter((_, idx) => idx !== i))}
+                      className="absolute right-1 top-1 grid h-5 w-5 place-items-center rounded-full bg-black/60 text-white transition hover:bg-black/80"
+                      aria-label="Remove photo"
+                    >
+                      <X size={12} />
+                    </button>
+                  </motion.div>
+                ))}
+              </div>
+
+              {error && <p className="mt-4 rounded-[8px] bg-rose-50 px-4 py-2.5 text-[12px] font-semibold text-rose-700">{error}</p>}
+
+              <div className="mt-6 flex justify-end gap-2.5">
+                <button className="h-10 rounded-xl border border-[#efe5dc] bg-white px-5 text-[12px] font-black text-[#5c514b] transition hover:bg-gray-50" onClick={onClose} type="button">
+                  Cancel
+                </button>
+                <button
+                  className="inline-flex h-10 items-center gap-2 rounded-xl bg-gradient-to-r from-[#fd761a] to-[#e86710] px-6 text-[12px] font-black text-white shadow-sm transition hover:shadow-[0_6px_16px_rgba(253,118,26,0.3)] disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={rating === 0 || comment.trim().length < 5 || submitting || uploadingImage}
+                  type="submit"
+                >
+                  {submitting ? <Loader2 size={14} className="animate-spin" /> : "Submit Review"}
+                </button>
+              </div>
+            </form>
+          </>
+        )}
       </motion.section>
     </motion.div>
   );

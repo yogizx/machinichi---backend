@@ -4,13 +4,22 @@ import { Order } from '../models/Order';
 import { Coupon } from '../models/Coupon';
 import { AuthRequest } from '../middlewares/auth.middleware';
 import { sendSuccess, sendError } from '../services/apiResponse';
-import { createOrderSchema, applyCouponSchema } from '../validators';
+import { createOrderSchema, applyCouponSchema, evaluateOffersSchema } from '../validators';
 import { Types } from 'mongoose';
 import { deductStock, releaseStock } from '../services/inventory.service';
 import { calculateOrderTax, getGstRateForCategory } from '../services/tax.service';
 import { generateOrderId, generateInvoiceNumber } from '../services/orderId.service';
 import { sendOrderConfirmationNotifications } from '../services/notification.service';
 import { bulkRecordPurchases } from '../services/analytics.service';
+import {
+  buildFreeDeliveryRejectionMessage,
+  getActiveOfferCoupons,
+  isDistrictEligible,
+  pickBestScratchReward,
+  resolveAppliedOffer,
+  resolveFreeDeliveryOffer,
+  resolveScratchReward,
+} from '../services/offer.service';
 
 export const mapAddressForDb = (addr: any) => {
   if (!addr) return undefined;
@@ -73,11 +82,20 @@ export const getCheckoutSummary = async (req: AuthRequest, res: Response, next: 
     const totalMrp = items.reduce((sum: number, item: any) => sum + item.mrp * item.quantity, 0);
     const totalDiscount = totalMrp - subtotal;
     const { cgst, sgst, igst, totalGst } = calculateOrderTax(items, true);
-    const shippingCharges = subtotal >= 500 ? 0 : 40;
+    const totalQuantity = items.reduce((sum: number, item: any) => sum + item.quantity, 0);
+    const activeCoupons = await getActiveOfferCoupons();
+    const scratchReward = pickBestScratchReward(activeCoupons, { totalQuantity, orderAmount: subtotal });
+    const freeDelivery = resolveFreeDeliveryOffer(activeCoupons, null);
+    const shippingCharges = freeDelivery?.districtMatched ? 0 : subtotal >= 500 ? 0 : 40;
 
     sendSuccess(res, {
       data: {
         items,
+        offers: {
+          scratchCard: scratchReward,
+          freeDelivery,
+          shippingCharges,
+        },
         summary: {
           totalMrp,
           totalDiscount,
@@ -89,6 +107,84 @@ export const getCheckoutSummary = async (req: AuthRequest, res: Response, next: 
           totalGst,
           totalPayable: subtotal + shippingCharges + totalGst,
         },
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const evaluateOffers = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    if (!req.user?.userId) {
+      return sendError(res, 'Authentication required', 401);
+    }
+
+    const validation = evaluateOffersSchema.safeParse(req.body);
+    if (!validation.success) {
+      return sendError(res, 'Validation failed', 400, validation.error.issues);
+    }
+
+    const { orderAmount, totalQuantity, district, couponCode } = validation.data;
+    const activeCoupons = await getActiveOfferCoupons();
+
+    const scratchReward = pickBestScratchReward(activeCoupons, { totalQuantity, orderAmount });
+    const freeDelivery = resolveFreeDeliveryOffer(activeCoupons, district);
+
+    let coupon: any = null;
+    if (couponCode) {
+      const requested = activeCoupons.find((item) => item.code === couponCode.toUpperCase());
+      if (!requested) {
+        return sendError(res, 'Invalid or expired coupon', 400);
+      }
+      if (requested.discountType === 'Free Delivery') {
+        if (!isDistrictEligible(requested.freeDeliveryDistricts, district)) {
+          return sendError(res, buildFreeDeliveryRejectionMessage(requested, district), 400);
+        }
+        coupon = {
+          couponId: String(requested._id),
+          code: requested.code,
+          name: requested.name,
+          description: requested.description || '',
+          discountType: 'Free Delivery',
+          discountAmount: 0,
+          freeDelivery: true,
+        };
+      } else if (requested.offerType === 'scratch_card') {
+        const reward = resolveScratchReward(requested, { totalQuantity, orderAmount });
+        if (!reward) {
+          return sendError(res, 'This scratch card offer does not match your cart', 400);
+        }
+        coupon = { ...reward, scratchCard: true };
+      } else {
+        const resolution = await resolveAppliedOffer({
+          couponId: requested._id,
+          district,
+          totalQuantity,
+          orderAmount,
+        });
+        if (resolution.error) return sendError(res, resolution.error, 400);
+        coupon = {
+          couponId: String(requested._id),
+          code: requested.code,
+          name: requested.name,
+          description: requested.description || '',
+          discountType: requested.discountType,
+          discountValue: requested.discountValue,
+          discountAmount: resolution.discountAmount,
+          freeDelivery: resolution.freeDelivery,
+        };
+      }
+    }
+
+    sendSuccess(res, {
+      data: {
+        totalQuantity,
+        orderAmount,
+        district: district || '',
+        scratchCard: scratchReward,
+        freeDelivery,
+        coupon,
       },
     });
   } catch (error) {
@@ -146,13 +242,41 @@ export const placeOrder = async (req: AuthRequest, res: Response, next: NextFunc
 
     const subtotal = items.reduce((sum: number, item: any) => sum + item.lineTotal, 0);
     const totalMrp = items.reduce((sum: number, item: any) => sum + item.mrp * item.quantity, 0);
-    const totalDiscount = totalMrp - subtotal;
+    const totalQuantity = items.reduce((sum: number, item: any) => sum + item.quantity, 0);
     const { cgst, sgst, igst, totalGst } = calculateOrderTax(items, orderData.isIntraState);
-    const shippingCharges = orderData.shippingCharges ?? (subtotal >= 500 ? 0 : 40);
+    const district = orderData.shippingAddress?.city;
+
+    const scratchResolution = await resolveAppliedOffer({
+      couponId: orderData.scratchCouponId,
+      district,
+      totalQuantity,
+      orderAmount: subtotal,
+    });
+    if (scratchResolution.error) {
+      return sendError(res, scratchResolution.error, 400);
+    }
+
+    const couponResolution = await resolveAppliedOffer({
+      couponId: orderData.coupon?.couponId,
+      district,
+      totalQuantity,
+      orderAmount: subtotal,
+    });
+    if (couponResolution.error) {
+      return sendError(res, couponResolution.error, 400);
+    }
+
+    const scratchReward = scratchResolution.scratchReward;
+    const scratchDiscount = scratchReward?.discountAmount ?? 0;
+    const couponDiscount = couponResolution.discountAmount;
+    const shippingCharges = couponResolution.freeDelivery
+      ? 0
+      : orderData.shippingCharges ?? (subtotal >= 500 ? 0 : 40);
+    const totalDiscount = (totalMrp - subtotal) + scratchDiscount + couponDiscount;
 
     const orderRef = generateOrderId();
 
-    const orderTotal = subtotal + shippingCharges + totalGst;
+    const orderTotal = Math.max(subtotal + shippingCharges + totalGst - scratchDiscount - couponDiscount, 0);
 
     const order = await Order.create({
       orderId: orderRef,
@@ -182,9 +306,17 @@ export const placeOrder = async (req: AuthRequest, res: Response, next: NextFunc
       shippingCharges,
       totalAmount: orderTotal,
       orderTotal,
-      couponCode: orderData.coupon?.code,
-      couponId: orderData.coupon?.couponId ? new Types.ObjectId(orderData.coupon.couponId) : undefined,
-      scratchDiscount: orderData.coupon?.discountAmount || 0,
+      couponCode: couponResolution.coupon?.code,
+      couponId: couponResolution.coupon?._id,
+      scratchCouponId: scratchReward?.couponId,
+      scratchDiscount: scratchReward
+        ? {
+          discountType: scratchReward.discountType,
+          discountValue: scratchReward.discountValue,
+          discountAmount: scratchReward.discountAmount,
+          label: scratchReward.label,
+        }
+        : undefined,
       invoiceNumber: generateInvoiceNumber(),
       status: 'pending_approval',
       paymentStatus: 'Pending',
@@ -208,8 +340,12 @@ export const placeOrder = async (req: AuthRequest, res: Response, next: NextFunc
     cart.items = [];
     await cart.save();
 
-    if (orderData.coupon?.couponId) {
-      await Coupon.findByIdAndUpdate(orderData.coupon.couponId, { $inc: { usedCount: 1 } });
+    if (couponResolution.coupon) {
+      await Coupon.findByIdAndUpdate(couponResolution.coupon._id, { $inc: { usedCount: 1 } });
+    }
+
+    if (scratchResolution.coupon && String(scratchResolution.coupon._id) !== String(couponResolution.coupon?._id)) {
+      await Coupon.findByIdAndUpdate(scratchResolution.coupon._id, { $inc: { usedCount: 1 } });
     }
 
     // Same rule as inventory: a sale is only real once it's paid for (COD is
@@ -252,7 +388,8 @@ export const applyCoupon = async (req: AuthRequest, res: Response, next: NextFun
       return sendError(res, 'Validation failed', 400, validation.error.issues);
     }
 
-    const { code, orderAmount, totalQuantity, items } = validation.data;
+    const { code, orderAmount, totalQuantity, district, items } = validation.data;
+    const quantity = totalQuantity || items.reduce((sum, item) => sum + item.quantity, 0);
 
     const coupon = await Coupon.findOne({
       code: code.toUpperCase(),
@@ -289,13 +426,39 @@ export const applyCoupon = async (req: AuthRequest, res: Response, next: NextFun
       }
     }
 
+    if (coupon.offerType === 'scratch_card') {
+      const reward = resolveScratchReward(coupon, { totalQuantity: quantity, orderAmount });
+      if (!reward) {
+        return sendError(res, 'This scratch card offer does not match your cart', 400);
+      }
+
+      return sendSuccess(res, {
+        data: {
+          couponId: coupon._id,
+          code: coupon.code,
+          discountType: reward.discountType,
+          discountValue: reward.discountValue,
+          discountAmount: reward.discountAmount,
+          description: coupon.description,
+          name: coupon.name,
+          label: reward.label,
+          matchedRule: reward.matchedRule,
+          isScratchCard: true,
+        },
+      });
+    }
+
     let discountAmount = 0;
     if (coupon.discountType === 'Percentage') {
       discountAmount = Math.round((orderAmount * coupon.discountValue) / 100);
       if (coupon.maxDiscountAmount) {
         discountAmount = Math.min(discountAmount, coupon.maxDiscountAmount);
       }
+      discountAmount = Math.min(discountAmount, orderAmount);
     } else if (coupon.discountType === 'Free Delivery') {
+      if (!isDistrictEligible(coupon.freeDeliveryDistricts, district)) {
+        return sendError(res, buildFreeDeliveryRejectionMessage(coupon, district), 400);
+      }
       discountAmount = 0;
     }
 
@@ -308,6 +471,8 @@ export const applyCoupon = async (req: AuthRequest, res: Response, next: NextFun
         discountAmount,
         description: coupon.description,
         name: coupon.name,
+        freeDeliveryDistricts: coupon.freeDeliveryDistricts || [],
+        isFreeDelivery: coupon.discountType === 'Free Delivery',
       },
     });
   } catch (error) {

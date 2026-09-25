@@ -6,14 +6,18 @@ import {
   Gift,
   Info,
   Loader2,
+  MapPin,
   Package,
   Percent,
+  Plus,
   RefreshCw,
   Search,
   Sparkles,
   Settings,
   Ticket,
   Timer,
+  Trash2,
+  Truck,
   X,
   Zap,
 } from "lucide-react";
@@ -33,10 +37,98 @@ const offerTypes = [
   { label: "Flash Sale", icon: Zap },
   { label: "Bundle", icon: Package },
   { label: "Scratch Card", icon: Sparkles },
+  { label: "Free Delivery", icon: Truck },
 ];
 
+const offerTypeToApi = {
+  Coupon: "coupon",
+  "Flash Sale": "flash_sale",
+  Bundle: "bundle",
+  "Scratch Card": "scratch_card",
+  "Free Delivery": "free_delivery",
+};
+
+const offerCodePrefixes = {
+  Coupon: "ORG",
+  "Flash Sale": "FLASH",
+  Bundle: "BUNDLE",
+  "Scratch Card": "SCR",
+  "Free Delivery": "FREE",
+};
+
 const scratchDiscountTypes = ["Percentage (%)", "Fixed Amount"];
+const scratchRuleBases = [
+  { label: "Product Quantity", value: "quantity", thresholdLabel: "Minimum items", unit: "items" },
+  { label: "Order Amount", value: "order_amount", thresholdLabel: "Minimum order amount", unit: "₹" },
+];
 const scratchProductConditions = ["Selected Products", "All Products"];
+
+let scratchRuleSequence = 0;
+const nextScratchRuleId = () => {
+  scratchRuleSequence += 1;
+  return `scratch-rule-${scratchRuleSequence}`;
+};
+
+let offerCodeSequence = 1000;
+const buildOfferCode = (prefix) => {
+  offerCodeSequence = (offerCodeSequence + 1) % 10000;
+  return `${prefix}${String(offerCodeSequence).padStart(4, "0")}`;
+};
+
+const createScratchRule = (basis = "quantity", threshold = "", discountValue = "") => ({
+  id: nextScratchRuleId(),
+  basis,
+  threshold,
+  discountType: "Percentage (%)",
+  discountValue,
+  label: "",
+});
+
+const createDefaultScratchRules = () => [
+  { ...createScratchRule("quantity", "1", "5"), label: "Single product reward" },
+  { ...createScratchRule("quantity", "10", "12"), label: "Bulk product reward" },
+  { ...createScratchRule("order_amount", "1000", "15"), label: "High value order reward" },
+];
+
+const deliveryDistrictOptions = [
+  "Mumbai", "Pune", "Nagpur", "Nashik", "Thane", "Aurangabad", "Kolhapur", "Solapur", "Amravati", "Nanded",
+  "Delhi", "New Delhi", "Noida", "Gurgaon", "Faridabad", "Ghaziabad", "Greater Noida", "Dwarka", "Rohini",
+  "Bengaluru", "Mysuru", "Hubballi", "Mangaluru", "Belagavi", "Davanagere", "Udupi", "Hassan", "Mysore",
+  "Hyderabad", "Warangal", "Nizamabad", "Karimnagar", "Khammam", "Ramagundam", "Vijayawada", "Visakhapatnam",
+  "Chennai", "Coimbatore", "Madurai", "Trichy", "Tiruchirappalli", "Salem", "Tirunelveli", "Erode", "Vellore",
+  "Kochi", "Thiruvananthapuram", "Kozhikode", "Thrissur", "Kollam", "Kannur", "Kottayam", "Alappuzha",
+  "Kolkata", "Howrah", "Hooghly", "Nadia", "Darjeeling", "Jalpaiguri", "Siliguri", "Cooch Behar", "Malda",
+  "Ahmedabad", "Surat", "Vadodara", "Rajkot", "Bhavnagar", "Gandhinagar", "Jamnagar", "Junagadh", "Bharuch",
+  "Jaipur", "Jodhpur", "Udaipur", "Kota", "Ajmer", "Bikaner", "Alwar", "Bharatpur", "Sikar",
+  "Lucknow", "Kanpur", "Varanasi", "Agra", "Prayagraj", "Meerut", "Bareilly", "Aligarh", "Ghaziabad", "Ayodhya",
+  "Patna", "Gaya", "Bhagalpur", "Muzaffarpur", "Darbhanga", "Begusarai", "Chapra",
+  "Bhopal", "Indore", "Gwalior", "Jabalpur", "Ujjain", "Sagar", "Satna", "Ratlam", "Dewas", "Rewa",
+  "Raipur", "Bhilai", "Bilaspur", "Korba", "Durg", "Jagdalpur", "Ambikapur",
+  "Ranchi", "Jamshedpur", "Dhanbad", "Bokaro", "Deoghar", "Hazaribagh", "Daltonganj", "Chatra",
+  "Kurnool", "Kadapa", "Nellore", "Ongole", "Rajahmundry", "Srikakulam", "Vizianagaram", "Machilipatnam", "Tirupati",
+  "Warangal", "Nizamabad", "Karimnagar", "Khammam", "Mahabubnagar", "Nalgonda", "Adilabad", "Wanaparthy", "Bhongir",
+  "Ratlam", "Dhar", "Khandwa", "Bemetara", "Betul", "Chhindwara", "Balaghat", "Seoni", "Mandla", "Shajapur",
+  "Guwahati", "Dibrugarh", "Silchar", "Jorhat", "Tezpur", "Naga", "Imphal", "Shillong", "Agartala", "Aizawl",
+  "Srinagar", "Jammu", "Anantnag", "Baramulla", "Doda", "Kathua", "Udhampur",
+  "Puducherry", "Panaji", "Daman", "Diu",
+  "Chandigarh", "Mohali", "Panchkula", "Ambala", "Kurukshetra", "Hisar", "Rohtak", "Sonipat", "Panipat", "Yamunanagar",
+  "Dehradun", "Haridwar", "Haldwani", "Rudrapur", "Rishikesh", "Kotdwar", "Shimla", "Solan", "Mandi", "Dharamshala",
+  "Ernakulam", "Angamaly", "Kalamassery", "Thrissur", "Alappuzha", "Kottayam", "Malappuram", "Kasaragod",
+  "Salem", "Namakkal", "Karur", "Periyar", "Dharmapuri", "Villupuram", "Cuddalore", "Kannur",
+];
+
+const normalizeDistrictKey = (value) => String(value ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+
+const dedupeDistrictList = (values) => {
+  const seen = new Set();
+  return values.filter((value) => {
+    const key = normalizeDistrictKey(value);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
 const homeCategories = [
   "All Categories",
   "Dryfruits",
@@ -172,14 +264,12 @@ function Createoffers({ onAdminLogout }) {
     limitPerCustomer: "",
     scratchCardOfferType: "Checkout Scratch Reward",
     scratchProductCondition: "Selected Products",
-    singleScratchLabel: "Single product reward",
-    singleScratchDiscountValue: "5",
-    singleScratchDiscountType: "Percentage (%)",
-    multipleScratchLabel: "Multi product reward",
-    multipleScratchDiscountValue: "10",
-    multipleScratchDiscountType: "Percentage (%)",
-    multipleProductThreshold: "2",
   });
+
+  const [scratchRules, setScratchRules] = useState(() => createDefaultScratchRules());
+  const [freeDeliveryDistricts, setFreeDeliveryDistricts] = useState([]);
+  const [districtSearch, setDistrictSearch] = useState("");
+  const [customDistrict, setCustomDistrict] = useState("");
 
   const [datesConfirmed, setDatesConfirmed] = useState(false);
   const [dateError, setDateError] = useState("");
@@ -296,14 +386,11 @@ function Createoffers({ onAdminLogout }) {
       limitPerCustomer: "",
       scratchCardOfferType: "Checkout Scratch Reward",
       scratchProductCondition: "Selected Products",
-      singleScratchLabel: "Single product reward",
-      singleScratchDiscountValue: "5",
-      singleScratchDiscountType: "Percentage (%)",
-      multipleScratchLabel: "Multi product reward",
-      multipleScratchDiscountValue: "10",
-      multipleScratchDiscountType: "Percentage (%)",
-      multipleProductThreshold: "2",
     });
+    setScratchRules(createDefaultScratchRules());
+    setFreeDeliveryDistricts([]);
+    setDistrictSearch("");
+    setCustomDistrict("");
   };
 
   const updateOfferType = (offerType) => {
@@ -313,21 +400,98 @@ function Createoffers({ onAdminLogout }) {
     setBundleError("");
     setBundleMessage("");
     setIsBundlePreviewOpen(false);
+    if (!formData.couponCode.trim()) {
+      updateField("couponCode", buildOfferCode(offerCodePrefixes[offerType] || "OFFER"));
+    }
+    if (offerType === "Free Delivery" || offerType === "Scratch Card") {
+      setSaveError("");
+    }
   };
 
   const generateCouponCode = () => {
-    const prefix =
-      selectedOfferType === "Flash Sale"
-        ? "FLASH"
-        : selectedOfferType === "Bundle"
-          ? "BUNDLE"
-          : selectedOfferType === "Scratch Card"
-            ? "SCRATCH"
-          : "ORGANIC";
-    const suffix = Math.floor(1000 + Math.random() * 9000);
-
-    updateField("couponCode", `${prefix}${suffix}`);
+    updateField("couponCode", buildOfferCode(offerCodePrefixes[selectedOfferType] || "OFFER"));
   };
+
+  const addScratchRule = () => {
+    setSaveError("");
+    setScratchRules((current) => [...current, createScratchRule()]);
+  };
+
+  const updateScratchRule = (id, field, value) => {
+    setSaveError("");
+    setScratchRules((current) => current.map((rule) => (rule.id === id ? { ...rule, [field]: value } : rule)));
+  };
+
+  const removeScratchRule = (id) => {
+    setSaveError("");
+    setScratchRules((current) => current.filter((rule) => rule.id !== id));
+  };
+
+  const toggleDistrict = (district) => {
+    setSaveError("");
+    const key = normalizeDistrictKey(district);
+    setFreeDeliveryDistricts((current) =>
+      dedupeDistrictList(
+        current.some((item) => normalizeDistrictKey(item) === key)
+          ? current.filter((item) => normalizeDistrictKey(item) !== key)
+          : [...current, district],
+      ),
+    );
+  };
+
+  const addCustomDistrict = () => {
+    const value = customDistrict.trim();
+    if (!value) return;
+    toggleDistrict(value);
+    setCustomDistrict("");
+  };
+
+  const filteredDistrictOptions = useMemo(() => {
+    const query = districtSearch.trim().toLowerCase();
+    const selectedKeys = new Set(freeDeliveryDistricts.map(normalizeDistrictKey));
+    return dedupeDistrictList(deliveryDistrictOptions)
+      .filter((district) => !selectedKeys.has(normalizeDistrictKey(district)))
+      .filter((district) => !query || district.toLowerCase().includes(query))
+      .slice(0, 60);
+  }, [districtSearch, freeDeliveryDistricts]);
+
+  const validateScratchRules = (rules) => {
+    if (!rules.length) return "Add at least one scratch card discount rule";
+
+    const seen = new Set();
+    for (const rule of rules) {
+      const threshold = Number(rule.threshold);
+      const minimumThreshold = rule.basis === "quantity" ? 1 : 0;
+      if (!Number.isFinite(threshold) || threshold < minimumThreshold) {
+        return rule.basis === "quantity"
+          ? "Product quantity rules need a minimum of 1 item"
+          : "Order amount rules need an amount of 0 or more";
+      }
+
+      const discountValue = Number(rule.discountValue);
+      if (!Number.isFinite(discountValue) || discountValue <= 0) {
+        return "Every scratch card rule needs a discount value greater than 0";
+      }
+      if (rule.discountType === "Percentage (%)" && discountValue > 100) {
+        return "Scratch card percentage cannot exceed 100";
+      }
+
+      const key = `${rule.basis}:${threshold}`;
+      if (seen.has(key)) return "Two rules use the same condition. Change or remove the duplicate.";
+      seen.add(key);
+    }
+
+    return "";
+  };
+
+  const buildScratchRulePayload = (rules) =>
+    rules.map((rule) => ({
+      basis: rule.basis,
+      threshold: Number(rule.threshold) || 0,
+      discountType: rule.discountType === "Fixed Amount" ? "fixed" : "percentage",
+      discountValue: Number(rule.discountValue) || 0,
+      ...(rule.label.trim() ? { label: rule.label.trim() } : {}),
+    }));
 
   const toggleBundleProduct = (productName) => {
     setBundleError("");
@@ -408,6 +572,22 @@ function Createoffers({ onAdminLogout }) {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
 
+  const toFiniteNumber = (value, fallback = 0) => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  };
+
+  const getApiErrorMessage = (err) => {
+    const issues = err.response?.data?.errors;
+    if (Array.isArray(issues) && issues.length) {
+      const first = issues[0];
+      const field = Array.isArray(first.path) && first.path.length ? `${first.path.join(".")}: ` : "";
+      const detail = [field, first.message].filter(Boolean).join("");
+      return issues.length > 1 ? `${detail} (+${issues.length - 1} more)` : detail;
+    }
+    return err.response?.data?.message || "Failed to save offer";
+  };
+
   const saveOffer = async (status) => {
     if (selectedOfferType === "Bundle" && !submittedBundleOffer) {
       setBundleError("Submit the bundle offer before saving this offer.");
@@ -415,37 +595,95 @@ function Createoffers({ onAdminLogout }) {
       return;
     }
 
-    if (selectedOfferType === "Coupon") {
+    const rawUsageLimit = formData.totalUsageLimit.trim().toLowerCase();
+    const usageLimitValue = rawUsageLimit === "unlimited" ? 0 : toFiniteNumber(formData.totalUsageLimit, -1);
+    const perCustomerValue = toFiniteNumber(formData.limitPerCustomer, 0);
+
+    if (selectedOfferType !== "Bundle") {
       if (!formData.name.trim()) { setSaveError("Offer name is required"); return; }
+      if (formData.name.trim().length > 100) { setSaveError("Offer name cannot exceed 100 characters"); return; }
       if (!formData.description.trim()) { setSaveError("Internal description is required"); return; }
-      if (!formData.couponCode.trim()) { setSaveError("Coupon code is required"); return; }
+      if (formData.description.trim().length > 500) { setSaveError("Internal description cannot exceed 500 characters"); return; }
+      if (!formData.couponCode.trim()) { setSaveError("Offer code is required"); return; }
+      if (!/^[A-Za-z0-9]{3,10}$/.test(formData.couponCode.trim())) {
+        setSaveError("Offer code must be 3 to 10 letters or numbers only (no spaces or dashes)");
+        return;
+      }
       if (!formData.startDate) { setSaveError("Start date is required"); return; }
       if (!formData.endDate) { setSaveError("End date is required"); return; }
       if (!datesConfirmed) { setSaveError("Please confirm dates by clicking OK"); return; }
-      if (!formData.discountValue || Number(formData.discountValue) <= 0) { setSaveError("Discount value is required"); return; }
-      if (!formData.minPurchase || Number(formData.minPurchase) < 0) { setSaveError("Minimum purchase is required"); return; }
-      if (!formData.minQuantity || Number(formData.minQuantity) < 1) { setSaveError("Minimum quantity must be at least 1"); return; }
-      if (!formData.totalUsageLimit && formData.totalUsageLimit !== "0") { setSaveError("Total usage limit is required"); return; }
-      if (!formData.limitPerCustomer) { setSaveError("Limit per customer is required"); return; }
+      if (!formData.totalUsageLimit.trim()) { setSaveError("Total usage limit is required (enter 0 or unlimited)"); return; }
+      if (!Number.isInteger(usageLimitValue) || usageLimitValue < 0) {
+        setSaveError("Total usage limit must be 0 (unlimited) or a whole number");
+        return;
+      }
+      if (!formData.limitPerCustomer.trim()) { setSaveError("Limit per customer is required"); return; }
+      if (!Number.isInteger(perCustomerValue) || perCustomerValue < 1) {
+        setSaveError("Limit per customer must be a whole number of at least 1");
+        return;
+      }
+    }
+
+    if (selectedOfferType === "Coupon" || selectedOfferType === "Flash Sale") {
+      if (!formData.discountValue.trim()) { setSaveError("Discount value is required"); return; }
+      if (!Number.isFinite(Number(formData.discountValue)) || Number(formData.discountValue) < 0) {
+        setSaveError("Discount value must be a number of 0 or more");
+        return;
+      }
+      if (formData.discountType === "Percentage (%)" && Number(formData.discountValue) > 100) {
+        setSaveError("Percentage discount cannot exceed 100");
+        return;
+      }
+      if (formData.discountType === "Percentage (%)" && Number(formData.discountValue) <= 0) {
+        setSaveError("Percentage discount must be greater than 0");
+        return;
+      }
+    }
+
+    if (selectedOfferType !== "Bundle") {
+      if (!formData.minPurchase.trim()) { setSaveError("Minimum purchase is required"); return; }
+      if (!Number.isFinite(Number(formData.minPurchase)) || Number(formData.minPurchase) < 0) {
+        setSaveError("Minimum purchase must be a number of 0 or more");
+        return;
+      }
+      if (!formData.minQuantity.trim()) { setSaveError("Minimum quantity is required"); return; }
+      if (!Number.isInteger(Number(formData.minQuantity)) || Number(formData.minQuantity) < 1) {
+        setSaveError("Minimum quantity must be a whole number of at least 1");
+        return;
+      }
+    }
+
+    if (selectedOfferType === "Scratch Card") {
+      const scratchRuleError = validateScratchRules(scratchRules);
+      if (scratchRuleError) { setSaveError(scratchRuleError); return; }
     }
 
     setSaveError("");
     setSaving(true);
 
     try {
-      if (selectedOfferType === "Coupon") {
+      if (selectedOfferType !== "Bundle") {
         const discountTypeMap = { "Percentage (%)": "percentage", "Free Delivery": "free_delivery" };
+        const isFreeDeliveryOffer = selectedOfferType === "Free Delivery" || formData.discountType === "Free Delivery";
         const payload = {
           name: formData.name.trim(),
           code: formData.couponCode.trim().toUpperCase(),
           description: formData.description.trim(),
-          offerType: "coupon",
-          discountType: discountTypeMap[formData.discountType] || "percentage",
-          discountValue: Number(formData.discountValue) || 0,
-          minOrderAmount: Number(formData.minPurchase) || 0,
-          minQuantity: Number(formData.minQuantity) || 1,
-          usageLimit: formData.totalUsageLimit ? Number(formData.totalUsageLimit) : 0,
-          perUserLimit: formData.limitPerCustomer ? Number(formData.limitPerCustomer) : 1,
+          offerType: offerTypeToApi[selectedOfferType] || "coupon",
+          discountType: selectedOfferType === "Scratch Card"
+            ? "percentage"
+            : isFreeDeliveryOffer
+              ? "free_delivery"
+              : discountTypeMap[formData.discountType] || "percentage",
+          discountValue: selectedOfferType === "Scratch Card"
+            ? 0
+            : toFiniteNumber(formData.discountValue, 0),
+          minOrderAmount: toFiniteNumber(formData.minPurchase, 0),
+          minQuantity: toFiniteNumber(formData.minQuantity, 1),
+          scratchRules: selectedOfferType === "Scratch Card" ? buildScratchRulePayload(scratchRules) : [],
+          freeDeliveryDistricts: isFreeDeliveryOffer ? dedupeDistrictList(freeDeliveryDistricts) : [],
+          usageLimit: usageLimitValue,
+          perUserLimit: perCustomerValue,
           startsAt: toIsoFromParts(formData.startDate, formData.startHour, formData.startMinute, formData.startAmPm),
           expiresAt: toIsoFromParts(formData.endDate, formData.endHour, formData.endMinute, formData.endAmPm),
           isActive: status === "Active",
@@ -455,7 +693,7 @@ function Createoffers({ onAdminLogout }) {
       }
       navigate("/admin/offers-coupons");
     } catch (err) {
-      setSaveError(err.response?.data?.message || "Failed to save offer");
+      setSaveError(getApiErrorMessage(err));
     } finally {
       setSaving(false);
     }
@@ -531,7 +769,7 @@ function Createoffers({ onAdminLogout }) {
                 <p className="mb-3 text-[11px] font-black uppercase tracking-[0.08em] text-[#76665c]">
                   Offer Type
                 </p>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
                   {offerTypes.map(({ label, icon: Icon }) => (
                     <button
                       className={`flex h-[86px] flex-col items-center justify-center gap-2 rounded-[10px] border text-[12px] font-black transition duration-300 hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98] ${
@@ -628,7 +866,7 @@ function Createoffers({ onAdminLogout }) {
             </Panel>
           </section>
 
-          {selectedOfferType === "Coupon" ? (
+          {selectedOfferType === "Coupon" || selectedOfferType === "Flash Sale" ? (
             <Panel icon={Settings} title="Configuration" className="mt-4 animate-[offerSectionIn_280ms_ease-out_both]">
               <div className="grid gap-4 lg:grid-cols-[1.2fr_1.4fr]">
                 <Field label="Coupon Code *">
@@ -705,12 +943,86 @@ function Createoffers({ onAdminLogout }) {
                   />
                 </Field>
               </div>
+
+              {formData.discountType === "Free Delivery" ? (
+                <div className="mt-4 rounded-[10px] border border-[#e2d2c6] bg-[#fffaf6] p-4">
+                  <DistrictPicker
+                    districts={freeDeliveryDistricts}
+                    filteredOptions={filteredDistrictOptions}
+                    search={districtSearch}
+                    customDistrict={customDistrict}
+                    onSearchChange={setDistrictSearch}
+                    onCustomDistrictChange={setCustomDistrict}
+                    onToggleDistrict={toggleDistrict}
+                    onAddCustomDistrict={addCustomDistrict}
+                  />
+                </div>
+              ) : null}
+            </Panel>
+          ) : null}
+
+          {selectedOfferType === "Free Delivery" ? (
+            <Panel icon={Truck} title="Free Delivery Configuration" className="mt-4 animate-[offerSectionIn_280ms_ease-out_both]">
+              <div className="grid gap-4 lg:grid-cols-[1.2fr_0.6fr_0.6fr]">
+                <Field label="Offer Code *">
+                  <div className="flex gap-3">
+                    <input
+                      className="admin-input"
+                      onChange={(event) => {
+                        const val = event.target.value.replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 10);
+                        updateField("couponCode", val);
+                      }}
+                      maxLength={10}
+                      placeholder="E.G. FREE1234"
+                      type="text"
+                      value={formData.couponCode}
+                    />
+                    <button
+                      aria-label="Generate offer code"
+                      className="grid h-12 w-14 shrink-0 place-items-center rounded-[8px] bg-[#eee5dd] text-[#b5480b] transition duration-300 hover:-translate-y-0.5 hover:bg-[#e7d9cf] active:translate-y-0 active:scale-[0.98]"
+                      onClick={generateCouponCode}
+                      type="button"
+                    >
+                      <RefreshCw size={18} />
+                    </button>
+                  </div>
+                </Field>
+                <Field label={<span>Min. Purchase (₹) <span className="text-red-500">*</span></span>}>
+                  <input
+                    className="admin-input"
+                    onChange={(event) => updateField("minPurchase", event.target.value)}
+                    placeholder="0.00"
+                    value={formData.minPurchase}
+                  />
+                </Field>
+                <Field label={<span>Min. Quantity <span className="text-red-500">*</span></span>}>
+                  <input
+                    className="admin-input"
+                    onChange={(event) => updateField("minQuantity", event.target.value)}
+                    placeholder="1"
+                    value={formData.minQuantity}
+                  />
+                </Field>
+              </div>
+
+              <div className="mt-4">
+                <DistrictPicker
+                  districts={freeDeliveryDistricts}
+                  filteredOptions={filteredDistrictOptions}
+                  search={districtSearch}
+                  customDistrict={customDistrict}
+                  onSearchChange={setDistrictSearch}
+                  onCustomDistrictChange={setCustomDistrict}
+                  onToggleDistrict={toggleDistrict}
+                  onAddCustomDistrict={addCustomDistrict}
+                />
+              </div>
             </Panel>
           ) : null}
 
           {selectedOfferType === "Scratch Card" ? (
             <Panel icon={Sparkles} title="Scratch Card Settings" className="mt-4 animate-[offerSectionIn_280ms_ease-out_both]">
-              <div className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
+              <div className="grid gap-4 xl:grid-cols-[0.85fr_1.15fr]">
                 <div className="rounded-[10px] border border-[#e2d2c6] bg-[#fffaf6] p-4">
                   <Field label="Scratch Card Offer Type">
                     <input
@@ -739,46 +1051,193 @@ function Createoffers({ onAdminLogout }) {
                     </div>
                   </Field>
 
-                  <Field label="Multiple Product Threshold">
-                    <input
-                      className="admin-input"
-                      inputMode="numeric"
-                      min="2"
-                      onChange={(event) => updateField("multipleProductThreshold", event.target.value)}
-                      placeholder="2"
-                      type="number"
-                      value={formData.multipleProductThreshold}
-                    />
+                  <Field label="Offer Code *">
+                    <div className="flex gap-3">
+                      <input
+                        className="admin-input"
+                        onChange={(event) => {
+                          const val = event.target.value.replace(/[^A-Za-z0-9]/g, "").toUpperCase().slice(0, 10);
+                          updateField("couponCode", val);
+                        }}
+                        maxLength={10}
+                        placeholder="E.G. SCR1234"
+                        type="text"
+                        value={formData.couponCode}
+                      />
+                      <button
+                        aria-label="Generate offer code"
+                        className="grid h-12 w-14 shrink-0 place-items-center rounded-[8px] bg-[#eee5dd] text-[#b5480b] transition duration-300 hover:-translate-y-0.5 hover:bg-[#e7d9cf] active:translate-y-0 active:scale-[0.98]"
+                        onClick={generateCouponCode}
+                        type="button"
+                      >
+                        <RefreshCw size={18} />
+                      </button>
+                    </div>
                   </Field>
 
-                  <div className="rounded-[9px] bg-[#fff0e8] px-4 py-3 text-[12px] font-bold leading-5 text-[#8d3500]">
-                    Checkout will use the single-product reward for one eligible item and the multi-product reward when the cart reaches this threshold.
+                  <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                    <Field label={<span>Min. Purchase (₹) <span className="text-red-500">*</span></span>}>
+                      <input
+                        className="admin-input"
+                        onChange={(event) => updateField("minPurchase", event.target.value)}
+                        placeholder="0.00"
+                        value={formData.minPurchase}
+                      />
+                    </Field>
+                    <Field label={<span>Min. Quantity <span className="text-red-500">*</span></span>}>
+                      <input
+                        className="admin-input"
+                        onChange={(event) => updateField("minQuantity", event.target.value)}
+                        placeholder="1"
+                        value={formData.minQuantity}
+                      />
+                    </Field>
+                  </div>
+
+                  <div className="mt-4 rounded-[9px] bg-[#fff0e8] px-4 py-3 text-[12px] font-bold leading-5 text-[#8d3500]">
+                    The customer scratches once at checkout. The rule that gives the highest discount for their cart wins, so bigger carts always unlock the better reward.
                   </div>
                 </div>
 
-                <div className="grid gap-4 lg:grid-cols-2">
-                  <ScratchRuleCard
-                    discountType={formData.singleScratchDiscountType}
-                    discountValue={formData.singleScratchDiscountValue}
-                    label={formData.singleScratchLabel}
-                    onDiscountTypeChange={(value) => updateField("singleScratchDiscountType", value)}
-                    onDiscountValueChange={(value) => updateField("singleScratchDiscountValue", value)}
-                    onLabelChange={(value) => updateField("singleScratchLabel", value)}
-                    title="Single Product Offer"
-                  />
-                  <ScratchRuleCard
-                    discountType={formData.multipleScratchDiscountType}
-                    discountValue={formData.multipleScratchDiscountValue}
-                    label={formData.multipleScratchLabel}
-                    onDiscountTypeChange={(value) => updateField("multipleScratchDiscountType", value)}
-                    onDiscountValueChange={(value) => updateField("multipleScratchDiscountValue", value)}
-                    onLabelChange={(value) => updateField("multipleScratchLabel", value)}
-                    title="Multiple Product Offer"
-                  />
+                <div className="rounded-[10px] border border-[#e2d2c6] bg-[#fffaf6] p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <h3 className="text-[14px] font-black tracking-[-0.02em] text-[#2b1d15]">Discount Rules</h3>
+                      <p className="text-[11px] font-semibold text-[#8a7a71]">
+                        Set the percentage or amount for each quantity or order value condition.
+                      </p>
+                    </div>
+                    <button
+                      className="flex h-10 items-center gap-2 rounded-full bg-[#b5480b] px-5 text-[11px] font-black uppercase tracking-[0.06em] text-white transition hover:-translate-y-0.5 hover:bg-[#9a3d09] active:translate-y-0 active:scale-[0.98]"
+                      onClick={addScratchRule}
+                      type="button"
+                    >
+                      <Plus size={15} /> Add Rule
+                    </button>
+                  </div>
+
+                  <div className="mt-4 space-y-3">
+                    {scratchRules.map((rule, index) => {
+                      const basis = scratchRuleBases.find((item) => item.value === rule.basis) || scratchRuleBases[0];
+                      const threshold = Number(rule.threshold);
+                      const discountValue = Number(rule.discountValue);
+                      const previewAmount = rule.discountType === "Fixed Amount"
+                        ? discountValue
+                        : Math.round((1000 * discountValue) / 100);
+                      const previewValid = Number.isFinite(threshold) && Number.isFinite(discountValue) && discountValue > 0;
+
+                      return (
+                        <article
+                          className="rounded-[10px] border border-[#e2d2c6] bg-white p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)]"
+                          key={rule.id}
+                        >
+                          <div className="mb-3 flex items-center justify-between gap-3">
+                            <span className="rounded-full bg-[#ffe4d6] px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.08em] text-[#b5480b]">
+                              Rule {index + 1}
+                            </span>
+                            <div className="flex items-center gap-2">
+                              {previewValid ? (
+                                <span className="rounded-full bg-[#f1ffd2] px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.08em] text-[#597219]">
+                                  On ₹1,000 cart: {rule.discountType === "Fixed Amount" ? "₹" : ""}
+                                  {previewValid ? previewAmount : 0}
+                                  {rule.discountType === "Fixed Amount" ? " off" : "% off"}
+                                </span>
+                              ) : null}
+                              <button
+                                aria-label={`Remove rule ${index + 1}`}
+                                className="grid h-8 w-8 place-items-center rounded-full bg-[#fdecea] text-[#c0392b] transition hover:bg-[#f8d7d3] disabled:opacity-40"
+                                disabled={scratchRules.length === 1}
+                                onClick={() => removeScratchRule(rule.id)}
+                                type="button"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="grid gap-3 sm:grid-cols-2">
+                            <Field label="Applies When">
+                              <div className="relative">
+                                <select
+                                  className="admin-input appearance-none"
+                                  onChange={(event) => updateScratchRule(rule.id, "basis", event.target.value)}
+                                  value={rule.basis}
+                                >
+                                  {scratchRuleBases.map((option) => (
+                                    <option key={option.value} value={option.value}>{option.label}</option>
+                                  ))}
+                                </select>
+                                <ChevronDown
+                                  className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-[#7a6b62]"
+                                  size={16}
+                                />
+                              </div>
+                            </Field>
+
+                            <Field label={basis.thresholdLabel}>
+                              <input
+                                className="admin-input"
+                                min={rule.basis === "quantity" ? 1 : 0}
+                                onChange={(event) => updateScratchRule(rule.id, "threshold", event.target.value)}
+                                placeholder={rule.basis === "quantity" ? "10" : "1000"}
+                                type="number"
+                                value={rule.threshold}
+                              />
+                            </Field>
+
+                            <Field label="Reward Type">
+                              <div className="relative">
+                                <select
+                                  className="admin-input appearance-none"
+                                  onChange={(event) => updateScratchRule(rule.id, "discountType", event.target.value)}
+                                  value={rule.discountType}
+                                >
+                                  {scratchDiscountTypes.map((type) => (
+                                    <option key={type}>{type}</option>
+                                  ))}
+                                </select>
+                                <ChevronDown
+                                  className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-[#7a6b62]"
+                                  size={16}
+                                />
+                              </div>
+                            </Field>
+
+                            <Field label={rule.discountType === "Fixed Amount" ? "Reward Amount (₹)" : "Discount (%)"}>
+                              <input
+                                className="admin-input"
+                                max={rule.discountType === "Fixed Amount" ? undefined : 100}
+                                min={0}
+                                onChange={(event) => updateScratchRule(rule.id, "discountValue", event.target.value)}
+                                placeholder={rule.discountType === "Fixed Amount" ? "200" : "12"}
+                                type="number"
+                                value={rule.discountValue}
+                              />
+                            </Field>
+                          </div>
+
+                          <div className="mt-3">
+                            <Field label="Reward Label (shown to the customer)">
+                              <input
+                                className="admin-input"
+                                maxLength={80}
+                                onChange={(event) => updateScratchRule(rule.id, "label", event.target.value)}
+                                placeholder={rule.basis === "quantity"
+                                  ? `${discountValue || 0}% OFF for ${threshold || 0}+ items`
+                                  : `${discountValue || 0}% OFF on orders above ₹${threshold || 0}`}
+                                value={rule.label}
+                              />
+                            </Field>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
             </Panel>
           ) : null}
+
 
           <section className="mt-4 grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
             <Panel icon={Timer} title="Usage Limits">
@@ -1342,65 +1801,112 @@ function PriceLine({ green = false, label, light = false, strong = false, value 
   );
 }
 
-function ScratchRuleCard({
-  discountType,
-  discountValue,
-  label,
-  onDiscountTypeChange,
-  onDiscountValueChange,
-  onLabelChange,
-  title,
+function DistrictPicker({
+  districts,
+  filteredOptions,
+  search,
+  customDistrict,
+  onSearchChange,
+  onCustomDistrictChange,
+  onToggleDistrict,
+  onAddCustomDistrict,
 }) {
   return (
-    <article className="rounded-[10px] border border-[#e2d2c6] bg-[#fffaf6] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.85)]">
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <h3 className="text-[14px] font-black tracking-[-0.02em] text-[#2b1d15]">
-          {title}
-        </h3>
+    <div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-[13px] font-black tracking-[-0.02em] text-[#2b1d15]">Eligible Delivery Districts</p>
+          <p className="text-[11px] font-semibold text-[#8a7a71]">
+            Matched against the customer&apos;s saved delivery city at checkout. Leave empty to offer free delivery everywhere.
+          </p>
+        </div>
         <span className="rounded-full bg-[#ffe4d6] px-3 py-1.5 text-[9px] font-black uppercase tracking-[0.08em] text-[#b5480b]">
-          Scratch
+          {districts.length} selected
         </span>
       </div>
 
-      <Field label="Reward Label">
-        <input
-          className="admin-input"
-          onChange={(event) => onLabelChange(event.target.value)}
-          placeholder="e.g. Single product reward"
-          value={label}
-        />
-      </Field>
+      {districts.length ? (
+        <div className="mt-4 flex flex-wrap gap-2">
+          {districts.map((district) => (
+            <span
+              className="inline-flex items-center gap-2 rounded-full bg-[#f1ffd2] px-3 py-1.5 text-[11px] font-black text-[#597219]"
+              key={normalizeDistrictKey(district)}
+            >
+              <MapPin size={13} />
+              {district}
+              <button
+                aria-label={`Remove ${district}`}
+                className="text-[#7a9c1f] transition hover:text-[#4d6b12]"
+                onClick={() => onToggleDistrict(district)}
+                type="button"
+              >
+                <X size={13} />
+              </button>
+            </span>
+          ))}
+        </div>
+      ) : (
+        <div className="mt-4 rounded-[9px] bg-[#f1ffd2] px-4 py-3 text-[12px] font-bold leading-5 text-[#597219]">
+          No district selected: this offer gives free delivery to every customer.
+        </div>
+      )}
 
-      <div className="grid gap-4 sm:grid-cols-[1fr_1.15fr]">
-        <Field label="Discount Value">
+      <div className="mt-4 grid gap-3 sm:grid-cols-[1.1fr_0.9fr]">
+        <label className="flex h-12 items-center gap-3 rounded-[8px] bg-[#f7f1ec] px-4 text-[#9a8a80] transition focus-within:bg-white focus-within:shadow-[0_0_0_4px_rgba(173,77,0,0.09)]">
+          <Search size={15} />
+          <input
+            className="min-w-0 flex-1 bg-transparent text-[12px] font-semibold text-[#302119] outline-none placeholder:text-[#998980]"
+            onChange={(event) => onSearchChange(event.target.value)}
+            placeholder="Search districts..."
+            type="text"
+            value={search}
+          />
+        </label>
+
+        <div className="flex gap-3">
           <input
             className="admin-input"
-            inputMode="decimal"
-            onChange={(event) => onDiscountValueChange(event.target.value)}
-            placeholder="0"
-            value={discountValue}
+            maxLength={80}
+            onChange={(event) => onCustomDistrictChange(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                onAddCustomDistrict();
+              }
+            }}
+            placeholder="Add district"
+            type="text"
+            value={customDistrict}
           />
-        </Field>
-
-        <Field label="Discount Type">
-          <div className="relative">
-            <select
-              className="admin-input appearance-none"
-              onChange={(event) => onDiscountTypeChange(event.target.value)}
-              value={discountType}
-            >
-              {scratchDiscountTypes.map((type) => (
-                <option key={type}>{type}</option>
-              ))}
-            </select>
-            <ChevronDown
-              className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-[#7a6b62]"
-              size={16}
-            />
-          </div>
-        </Field>
+          <button
+            className="h-12 shrink-0 rounded-[8px] bg-[#b5480b] px-5 text-[11px] font-black uppercase tracking-[0.06em] text-white transition hover:-translate-y-0.5 hover:bg-[#9a3d09] active:translate-y-0 active:scale-[0.98]"
+            onClick={onAddCustomDistrict}
+            type="button"
+          >
+            Add
+          </button>
+        </div>
       </div>
-    </article>
+
+      {filteredOptions.length ? (
+        <div className="mt-4 flex max-h-[220px] flex-wrap gap-2 overflow-y-auto rounded-[9px] border border-[#e2d2c6] bg-white p-3">
+          {filteredOptions.map((district) => (
+            <button
+              className="rounded-full border border-[#dfcfc3] bg-[#fffaf6] px-3 py-1.5 text-[11px] font-bold text-[#4c3d35] transition hover:border-[#b5480b] hover:text-[#b5480b]"
+              key={normalizeDistrictKey(district)}
+              onClick={() => onToggleDistrict(district)}
+              type="button"
+            >
+              + {district}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-4 text-[11px] font-bold text-[#8a7a71]">
+          No matching district in the list. Use &quot;Add district&quot; to create a custom one.
+        </p>
+      )}
+    </div>
   );
 }
 

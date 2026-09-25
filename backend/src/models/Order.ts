@@ -101,6 +101,7 @@ export interface IOrder extends mongoose.Document {
   returnRequestId?: mongoose.Types.ObjectId;
   couponCode?: string;
   couponId?: mongoose.Types.ObjectId;
+  scratchCouponId?: string;
   isIntraState?: boolean;
   shippingCharges?: number;
   invoiceUrl?: string;
@@ -218,6 +219,7 @@ const orderSchema = new Schema<IOrder>({
   returnRequestId: { type: Schema.Types.ObjectId, ref: 'ReturnRequest' },
   couponCode: { type: String },
   couponId: { type: Schema.Types.ObjectId, ref: 'Coupon' },
+  scratchCouponId: { type: String },
   isIntraState: { type: Boolean },
   shippingCharges: { type: Number },
   invoiceUrl: { type: String },

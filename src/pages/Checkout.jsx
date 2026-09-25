@@ -34,20 +34,6 @@ const productImage =
 const parseCurrency = (value) => Number(String(value).replace(/[^\d]/g, "")) || 0;
 const formatCurrency = (value) => `₹${value.toLocaleString("en-IN")}.00`;
 
-const defaultScratchOffers = {
-  singleProduct: {
-    discountType: "Percentage (%)",
-    discountValue: 5,
-    label: "Single product reward",
-  },
-  multipleProducts: {
-    discountType: "Percentage (%)",
-    discountValue: 10,
-    label: "Multi product reward",
-    minItems: 2,
-  },
-};
-
 const promoOffers = {
   MACH10: {
     code: "MACH10",
@@ -118,66 +104,37 @@ const getTotalItemCount = (items) =>
 
 const normalizeDiscountValue = (value) => Number(String(value).replace(/[^\d.]/g, "")) || 0;
 
-const isScratchOfferEligible = (offer, items) => {
-  if (!offer || offer.offerType !== "Scratch Card" || offer.status === "Draft") return false;
-  if (offer.scratchCard?.productCondition === "All Products") return true;
-
-  const eligibleProducts = offer.scratchCard?.eligibleProducts?.length
-    ? offer.scratchCard.eligibleProducts
-    : offer.products;
-
-  if (!eligibleProducts?.length) return true;
-
-  return items.every((item) => eligibleProducts.includes(item.name));
-};
-
-const getConfiguredScratchOffer = (items) => {
-  try {
-    const savedOffer = JSON.parse(sessionStorage.getItem("machinichiLastOffer") || "null");
-
-    if (!isScratchOfferEligible(savedOffer, items)) return null;
-
-    const scratchCard = savedOffer.scratchCard;
-    const minItems = Number(scratchCard?.multipleProducts?.minItems) || 2;
-    const reward =
-      getTotalItemCount(items) >= minItems
-        ? scratchCard?.multipleProducts
-        : scratchCard?.singleProduct;
-
-    return reward?.discountValue ? reward : null;
-  } catch {
-    return null;
-  }
-};
-
-const getScratchOfferForCart = (items) => {
-  const configuredOffer = getConfiguredScratchOffer(items);
-
-  if (configuredOffer) return configuredOffer;
-
-  return getTotalItemCount(items) > 1
-    ? defaultScratchOffers.multipleProducts
-    : defaultScratchOffers.singleProduct;
-};
-
 const getScratchDiscountAmount = (subtotal, reward) => {
-  const discountValue = normalizeDiscountValue(reward?.discountValue);
+  if (!reward) return 0;
+
+  if (reward.discountAmount != null) {
+    return Math.min(Number(reward.discountAmount) || 0, subtotal);
+  }
+
+  const discountValue = normalizeDiscountValue(reward.discountValue);
 
   if (!discountValue) return 0;
 
-  return reward?.discountType === "Fixed Amount"
+  return reward.discountType === "Fixed"
     ? Math.min(discountValue, subtotal)
     : Math.round((subtotal * discountValue) / 100);
 };
 
 const getScratchRewardText = (reward) => {
-  const discountValue = normalizeDiscountValue(reward?.discountValue);
+  if (!reward) return "Mystery Offer";
 
-  if (!discountValue) return "Mystery Offer";
+  const discountValue = normalizeDiscountValue(reward.discountValue);
 
-  return reward?.discountType === "Fixed Amount"
+  if (!discountValue) return reward.label || "Mystery Offer";
+
+  return reward.discountType === "Fixed"
     ? `${formatCurrency(discountValue).replace(".00", "")} OFF`
     : `${discountValue}% OFF`;
+};
+
+const getScratchRewardDetail = (reward) => {
+  if (!reward) return "Scratch or tap to reveal";
+  return reward.label || reward.name || "Discount applied automatically";
 };
 
 const getPromoDiscountAmount = (subtotal, offer, alreadyAppliedDiscount = 0) => {
@@ -273,6 +230,8 @@ function Checkout({ isSignedIn }) {
   const [appliedPromo, setAppliedPromo] = useState(null);
   const [promoMessage, setPromoMessage] = useState("");
   const [scratchReward, setScratchReward] = useState(null);
+  const [offerEvaluation, setOfferEvaluation] = useState(null);
+  const [offerEvaluationLoading, setOfferEvaluationLoading] = useState(false);
   const [scratchProgress, setScratchProgress] = useState(0);
   const [isScratching, setIsScratching] = useState(false);
   const [paying, setPaying] = useState(false);
@@ -288,12 +247,20 @@ function Checkout({ isSignedIn }) {
   );
   const itemQuantity = selected?.quantity || 1;
   const itemSize = selected?.selectedSize || "10kg Pack";
-  const shippingAmount = appliedPromo?.discountType === "Free Delivery" ? 0 : parseCurrency(shippingOptions[shippingMethod].price);
-  
+
   const selectedAddress =
     savedAddresses.find((a) => a._id === selectedAddressId) || savedAddresses[0];
 
-  const nextScratchReward = useMemo(() => getScratchOfferForCart(orderItems), [orderItems]);
+  const district = selectedAddress?.city || "";
+  const freeDeliveryOffer = offerEvaluation?.freeDelivery || null;
+  const isFreeDeliveryApplied = Boolean(
+    appliedPromo?.discountType === "Free Delivery" || freeDeliveryOffer?.districtMatched,
+  );
+  const shippingAmount = isFreeDeliveryApplied
+    ? 0
+    : parseCurrency(shippingOptions[shippingMethod].price);
+
+  const nextScratchReward = offerEvaluation?.scratchCard || null;
   const scratchDiscountAmount = scratchReward ? getScratchDiscountAmount(subtotal, scratchReward) : 0;
   const promoDiscountAmount = appliedPromo
     ? (appliedPromo.calculatedAmount ?? getPromoDiscountAmount(subtotal, appliedPromo, scratchDiscountAmount))
@@ -353,6 +320,46 @@ function Checkout({ isSignedIn }) {
       fetchAddresses();
     }
   }, [isSignedIn]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const evaluateOffers = async () => {
+      if (!isSignedIn || !orderItems.length) {
+        setOfferEvaluation(null);
+        return;
+      }
+
+      setOfferEvaluationLoading(true);
+      try {
+        const { data } = await api.post("/checkout/evaluate-offers", {
+          orderAmount: subtotal,
+          totalQuantity: getTotalItemCount(orderItems),
+          district,
+        });
+
+        if (!cancelled && data?.success) {
+          setOfferEvaluation(data.data);
+          setScratchReward(null);
+          setScratchProgress(0);
+        }
+      } catch {
+        if (!cancelled) {
+          setOfferEvaluation(null);
+          setScratchReward(null);
+          setScratchProgress(0);
+        }
+      } finally {
+        if (!cancelled) setOfferEvaluationLoading(false);
+      }
+    };
+
+    evaluateOffers();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isSignedIn, subtotal, district, orderItems]);
 
   useEffect(() => {
     if (selectedAddress) {
@@ -466,6 +473,7 @@ function Checkout({ isSignedIn }) {
         code: normalizedCode,
         orderAmount: subtotal,
         totalQuantity: totalQty,
+        district,
         items: orderItems.filter((item) => item._id).map((item) => ({
           productId: item._id,
           quantity: item.quantity || 1,
@@ -527,7 +535,7 @@ function Checkout({ isSignedIn }) {
       const loaded = await loadRazorpayScript();
       if (!loaded) { setPayError("Failed to load payment gateway. Please try again."); setPaying(false); return; }
 
-      const payloadShipping = appliedPromo?.discountType === "Free Delivery" ? 0 : (shippingMethod === "express" ? 120 : 50);
+      const payloadShipping = isFreeDeliveryApplied ? 0 : shippingAmount;
       const streetAddressCombined = [currentSelected.houseFlat, currentSelected.streetArea, currentSelected.landmark].filter(Boolean).join(", ");
       
       const payload = {
@@ -560,6 +568,8 @@ function Checkout({ isSignedIn }) {
         subtotal,
         shippingCharges: payloadShipping,
         discountAmount,
+        scratchCouponId: scratchReward?.couponId || undefined,
+        scratchDiscountAmount,
         coupon: appliedPromo ? { code: appliedPromo.code, couponId: appliedPromo.couponId, discountAmount: promoDiscountAmount, discountType: appliedPromo.discountType } : undefined,
         promoCode: appliedPromo ? appliedPromo.code : "",
         promoDiscount: promoDiscountAmount,
@@ -1024,29 +1034,49 @@ function Checkout({ isSignedIn }) {
                 ) : null}
               </div>
 
-              <ScratchCard
-                discount={scratchReward}
-                isScratching={isScratching}
-                onPointerDown={() => {
-                  setIsScratching(true);
-                  scratchCard();
-                }}
-                onPointerEnter={() => {
-                  if (isScratching) scratchCard();
-                }}
-                onPointerLeave={() => setIsScratching(false)}
-                onPointerMove={() => {
-                  if (isScratching) scratchCard();
-                }}
-                onPointerUp={() => setIsScratching(false)}
-                onReveal={revealScratchOffer}
-                progress={scratchProgress}
-                scratchBackground={scratchBackground}
-              />
+              {isSignedIn && nextScratchReward ? (
+                <ScratchCard
+                  discount={scratchReward}
+                  isScratching={isScratching}
+                  onPointerDown={() => {
+                    setIsScratching(true);
+                    scratchCard();
+                  }}
+                  onPointerEnter={() => {
+                    if (isScratching) scratchCard();
+                  }}
+                  onPointerLeave={() => setIsScratching(false)}
+                  onPointerMove={() => {
+                    if (isScratching) scratchCard();
+                  }}
+                  onPointerUp={() => setIsScratching(false)}
+                  onReveal={revealScratchOffer}
+                  progress={scratchProgress}
+                  scratchBackground={scratchBackground}
+                />
+              ) : null}
+
+              {offerEvaluationLoading ? (
+                <p className="mt-4 flex items-center gap-2 text-[12px] font-bold text-[#8a7a71]">
+                  <Loader2 className="animate-spin" size={14} /> Checking available offers for your cart...
+                </p>
+              ) : null}
+
+              {freeDeliveryOffer && !freeDeliveryOffer.districtMatched && !appliedPromo ? (
+                <div className="mt-5 rounded-[12px] border border-[#cfe4b5] bg-[#f0f7e8] px-4 py-3 text-[12px] font-bold leading-5 text-[#4d8a35]">
+                  {freeDeliveryOffer.unrestricted
+                    ? "A free delivery offer is active for this order."
+                    : `Free delivery is available for: ${freeDeliveryOffer.districts.slice(0, 6).join(", ")}${freeDeliveryOffer.districts.length > 6 ? "…" : ""}. Add that district to your delivery address to use it.`}
+                </div>
+              ) : null}
 
               <div className="mt-7 border-t border-[#d8c9be] pt-6">
                 <SummaryLine label="Subtotal" value={formatCurrency(subtotal)} />
-                <SummaryLine label="Shipping" value={formatCurrency(shippingAmount)} green />
+                <SummaryLine
+                  label={isFreeDeliveryApplied ? `Shipping (Free delivery${district ? ` for ${district}` : ""})` : "Shipping"}
+                  value={isFreeDeliveryApplied ? "FREE" : formatCurrency(shippingAmount)}
+                  green
+                />
                 {scratchReward ? (
                   <SummaryLine label={`Scratch Card (${getScratchRewardText(scratchReward)})`} value={`-${formatCurrency(scratchDiscountAmount)}`} green />
                 ) : null}
@@ -1347,7 +1377,7 @@ function ScratchCard({
             {discount ? rewardText : "Mystery Offer"}
           </p>
           <p className="mt-1 text-[12px] font-bold text-[#7d716a]">
-            {discount ? discount.label || "Discount applied automatically" : "Scratch or tap to reveal"}
+            {getScratchRewardDetail(discount)}
           </p>
           <span
             className={`mt-3 h-1.5 w-32 rounded-full bg-gradient-to-r from-[#5d8f35] via-[#fd761a] to-[#c7470a] transition duration-700 ${

@@ -9,7 +9,8 @@ import {
   deleteBanner,
   reorderBanners,
 } from '../controllers/banner.controller';
-import upload from '../middlewares/upload.middleware';
+import { uploadDisk } from '../middlewares/upload.middleware';
+import { cloudinary, isCloudinaryConfigured, CLOUDINARY_FOLDERS } from '../config/cloudinary';
 import sharp from 'sharp';
 import fs from 'fs';
 import path from 'path';
@@ -34,7 +35,7 @@ router.post(
   '/upload',
   authMiddleware,
   adminMiddleware,
-  upload.single('file'),
+  uploadDisk.single('file'),
   async (req: Request, res: Response): Promise<any> => {
     try {
       if (!req.file) {
@@ -84,9 +85,30 @@ router.post(
         fs.unlinkSync(req.file.path);
       }
 
-      const base = process.env.API_URL || process.env.PUBLIC_URL || 'http://localhost:3000';
-      const imageWebp = `${base.replace(/\/$/, '')}/uploads/${webpFilename}`;
-      const imageFallback = `${base.replace(/\/$/, '')}/uploads/${fallbackFilename}`;
+      // Push the optimized images to Cloudinary (public, CDN-delivered URLs).
+      // Falls back to legacy local /uploads URLs when Cloudinary is not configured.
+      let imageWebp: string;
+      let imageFallback: string;
+      if (isCloudinaryConfigured) {
+        const uploadAsset = async (filePath: string) => {
+          const result = await cloudinary.uploader.upload(filePath, {
+            folder: CLOUDINARY_FOLDERS.banners,
+            resource_type: 'image',
+            allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+            overwrite: true,
+          });
+          if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+          return result.secure_url;
+        };
+        [imageWebp, imageFallback] = await Promise.all([
+          uploadAsset(webpPath),
+          uploadAsset(fallbackPath),
+        ]);
+      } else {
+        const base = process.env.API_URL || process.env.PUBLIC_URL || 'http://localhost:3000';
+        imageWebp = `${base.replace(/\/$/, '')}/uploads/${webpFilename}`;
+        imageFallback = `${base.replace(/\/$/, '')}/uploads/${fallbackFilename}`;
+      }
 
       return res.json({
         success: true,

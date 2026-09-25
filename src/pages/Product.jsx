@@ -805,7 +805,11 @@ function ProductCard({ product, index, isFavorite, onAddToCart, onFavoriteToggle
           <div className="flex items-center gap-2">
             <StarRating interactive onSelect={selectRating} rating={product.rating} size={16} />
             <span className="text-[11px] font-black text-[#8a7d75]">
-              {product.rating}{product.reviewCount > 0 ? ` (${product.reviewCount})` : ""}
+              {product.reviewCount > 0
+                ? `${product.rating} (${product.reviewCount})`
+                : product.rating > 0
+                  ? `${product.rating}`
+                  : "No reviews yet"}
             </span>
           </div>
           <div className="mt-4 flex flex-wrap items-baseline gap-x-2 gap-y-1">

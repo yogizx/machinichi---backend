@@ -426,6 +426,7 @@ function Profile({ onSignOut }) {
                                     productId: item.productId?._id || item.productId,
                                     productName: item.name,
                                     productImage: item.image,
+                                    variantSize: item.variantSize,
                                   })
                                 }
                                 type="button"
@@ -483,6 +484,7 @@ function Profile({ onSignOut }) {
           productName={reviewModal.productName}
           productImage={reviewModal.productImage}
           productId={reviewModal.productId}
+          variantSize={reviewModal.variantSize}
           onClose={() => setReviewModal(null)}
           onSuccess={() => {
             setReviewModal(null);
@@ -804,7 +806,7 @@ function VerifyModal({ type, label, onClose, onVerified }) {
   );
 }
 
-function ReviewModal({ productName, productImage, productId, onClose, onSuccess }) {
+function ReviewModal({ productName, productImage, productId, variantSize, onClose, onSuccess }) {
   const [rating, setRating] = useState(0);
   const [hover, setHover] = useState(0);
   const [comment, setComment] = useState("");
@@ -823,6 +825,7 @@ function ReviewModal({ productName, productImage, productId, onClose, onSuccess 
         rating,
         title: comment.trim().slice(0, 100),
         comment: comment.trim(),
+        ...(variantSize ? { variantSize } : {}),
       });
       if (data.success) onSuccess();
     } catch (err) {
@@ -837,7 +840,12 @@ function ReviewModal({ productName, productImage, productId, onClose, onSuccess 
         <header className="flex items-center justify-between border-b border-[#eadfd6] px-6 py-5">
           <div className="flex items-center gap-3">
             <img src={productImage || ""} alt="" className="h-10 w-10 rounded-[6px] object-cover" />
-            <h2 className="text-[18px] font-black">Review {productName}</h2>
+            <div>
+              <h2 className="text-[18px] font-black">Review {productName}</h2>
+              {variantSize && (
+                <p className="text-[12px] font-bold text-[#b62917]">{variantSize}</p>
+              )}
+            </div>
           </div>
           <button onClick={onClose} type="button" className="text-[#7f7067] hover:text-[#2b180e]"><X size={18} /></button>
         </header>

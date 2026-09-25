@@ -16,6 +16,8 @@ import {
 
 const TABS = ["All Orders","Pending","Confirmed","Packed","Shipped","In Transit","Out For Delivery","Delivered","Cancelled","Returned"];
 const PER_PAGE = 15;
+const AUTO_REFRESH_MS = 5 * 60 * 1000;
+const TAB_REFRESH_STALE_MS = 10 * 1000;
 
 const TAB_TO_MACHINE = {
   "Pending":"pending_approval","Confirmed":"accepted","Packed":"packed",
@@ -34,22 +36,31 @@ export default function AdminOrders({ onAdminLogout }) {
   const [page, setPage] = useState(1);
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [actionId, setActionId] = useState(null);
+  const [actionAnchor, setActionAnchor] = useState(null);
   const [delayModal, setDelayModal] = useState(null);
   const [cancelModal, setCancelModal] = useState(null);
   const [invoiceModal, setInvoiceModal] = useState(null);
   const [tabCounts, setTabCounts] = useState({});
+  const [error, setError] = useState("");
+  const [lastRefreshedAt, setLastRefreshedAt] = useState(0);
+  const inFlightRef = useRef(false);
+  const lastRefreshedRef = useRef(0);
+  const loadedRef = useRef(false);
 
   const fetchCounts = useCallback(async () => {
     try {
-      const { data } = await api.get("/orders/admin/status-counts");
+      const { data } = await api.get("/orders/admin/status-counts", { timeout: 30000 });
       if (data.success) setTabCounts(data.data || {});
     } catch { /* non-critical */ }
   }, []);
 
   const fetchOrders = useCallback(async () => {
-    setLoading(true);
+    if (inFlightRef.current) { setLoading(false); return; }
+    inFlightRef.current = true;
+    setError("");
+    if (!loadedRef.current) setLoading(true);
     try {
-      const { data } = await api.get("/orders/admin/all", { params: { limit: 200, sort: "createdAt", order: "desc" } });
+      const { data } = await api.get("/orders/admin/all", { params: { limit: 200, sort: "createdAt", order: "desc" }, timeout: 30000 });
       if (data.success && data.data?.length) {
         const rawOrders = data.data;
         const customerStats = {};
@@ -96,7 +107,14 @@ export default function AdminOrders({ onAdminLogout }) {
           customerLifetimeSpend: customerStats[o.userId?._id || '']?.spend || 0,
         })));
       } else setOrders([]);
-    } catch { setOrders([]); }
+      loadedRef.current = true;
+      setLastRefreshedAt(Date.now());
+      lastRefreshedRef.current = Date.now();
+    } catch (err) {
+      setError(err?.message || "Failed to load orders");
+      setOrders(prev => prev.length ? prev : []);
+    }
+    inFlightRef.current = false;
     setLoading(false);
   }, []);
 
@@ -109,10 +127,10 @@ export default function AdminOrders({ onAdminLogout }) {
     }
   }, [search]);
 
-  // Silent 15s polling
+  // Silent 5-minute polling
   const fetchRef = useRef(fetchOrders); fetchRef.current = fetchOrders;
   useEffect(() => {
-    const t = setInterval(() => fetchRef.current(), 15000);
+    const t = setInterval(() => fetchRef.current(), AUTO_REFRESH_MS);
     return () => clearInterval(t);
   }, []);
 
@@ -122,7 +140,7 @@ export default function AdminOrders({ onAdminLogout }) {
   const handleStatusUpdate = async (orderId, newStatus) => {
     setActionId(null);
     try {
-      const { data } = await api.put(`/orders/status/${orderId}`, { status: newStatus });
+      const { data } = await api.put(`/orders/status/${orderId}`, { status: newStatus }, { timeout: 30000 });
       if (data.success) {
         updateOrder(orderId, { status: MACHINE_TO_DISPLAY[newStatus], machineStatus: newStatus, statusHistory: data.data?.statusHistory });
         fetchCounts();
@@ -133,7 +151,7 @@ export default function AdminOrders({ onAdminLogout }) {
   const handleCancel = async (orderId, reason, refundRequired) => {
     setCancelModal(null); setActionId(null);
     try {
-      const { data } = await api.put(`/orders/cancel/${orderId}`, { reason, refundRequired });
+      const { data } = await api.put(`/orders/cancel/${orderId}`, { reason, refundRequired }, { timeout: 30000 });
       if (data.success) {
         updateOrder(orderId, { status: "Cancelled", machineStatus: "cancelled", statusHistory: data.data?.statusHistory });
         fetchCounts();
@@ -144,7 +162,7 @@ export default function AdminOrders({ onAdminLogout }) {
   const handleDelay = async (orderId, reason, expectedDate, customerNote) => {
     setDelayModal(null); setActionId(null);
     try {
-      const { data } = await api.post(`/orders/delay/${orderId}`, { reason, expectedDate, customerNote });
+      const { data } = await api.post(`/orders/delay/${orderId}`, { reason, expectedDate, customerNote }, { timeout: 30000 });
       if (data.success) updateOrder(orderId, { delayHistory: data.data?.delayHistory });
     } catch (err) { alert(err.response?.data?.message || "Delay failed"); }
   };
@@ -205,11 +223,15 @@ export default function AdminOrders({ onAdminLogout }) {
             <h1 className="text-[28px] font-black tracking-tight text-[#3a1100] font-serif">Order Management</h1>
             <p className="mt-1 text-[13.5px] font-semibold text-[#796d66]">Track and manage the full order lifecycle</p>
           </div>
-          <div className="flex gap-2.5">
+          <div className="flex items-center gap-2.5">
+            <span className="text-[11.5px] font-bold text-[#9a8b82]">
+              {lastRefreshedAt ? `Last updated: ${new Date(lastRefreshedAt).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}` : "Last updated: —"}
+            </span>
             <button onClick={exportCSV} className="inline-flex h-10 items-center gap-2 rounded-xl border border-[#efe5dc] bg-white px-4 text-[12.5px] font-black text-[#5c514b] shadow-sm hover:bg-gray-50 transition">
               <Download size={14}/> Export CSV
             </button>
-            <button onClick={() => { fetchOrders(); fetchCounts(); }} className="grid h-10 w-10 place-items-center rounded-xl border border-[#efe5dc] bg-white text-[#796d66] hover:bg-gray-50 transition">
+            <button onClick={() => { fetchOrders(); fetchCounts(); }} title="Refresh now" type="button"
+              className="grid h-10 w-10 place-items-center rounded-xl border border-[#efe5dc] bg-white text-[#796d66] hover:bg-gray-50 transition">
               <RefreshCw size={15}/>
             </button>
           </div>
@@ -243,7 +265,7 @@ export default function AdminOrders({ onAdminLogout }) {
               const count = tabCounts[tab];
               const active = activeTab === tab;
               return (
-                <button key={tab} onClick={() => { setActiveTab(tab); setPage(1); }} type="button"
+                <button key={tab} onClick={() => { setActiveTab(tab); setPage(1); if (Date.now() - lastRefreshedRef.current > TAB_REFRESH_STALE_MS) { fetchOrders(); fetchCounts(); } }} type="button"
                   className={`shrink-0 rounded-xl px-3 py-2 text-[12px] font-black transition whitespace-nowrap ${
                     active ? "bg-[#3a1100] text-white shadow-sm" : "text-[#796d66] hover:bg-[#faf7f4] hover:text-[#3a1100]"
                   }`}>
@@ -263,6 +285,17 @@ export default function AdminOrders({ onAdminLogout }) {
               className="h-10 w-full rounded-xl border border-[#e5d8cd] bg-[#fdfbf9] pl-10 pr-4 text-[13px] outline-none placeholder:text-[#9a8b82] transition focus:border-[#fd761a] focus:bg-white"/>
           </div>
         </div>
+
+        {error && !loading && (
+          <div className="mb-5 flex items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-[12.5px] font-bold text-amber-800">
+            <AlertCircle size={15}/>
+            <span>{error}</span>
+            <button onClick={() => { fetchOrders(); fetchCounts(); }} type="button"
+              className="ml-auto shrink-0 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-[11px] font-black uppercase tracking-wide text-amber-800 hover:border-[#fd761a] hover:text-[#fd761a] transition">
+              Retry
+            </button>
+          </div>
+        )}
 
         {/* Table */}
         {loading ? (
@@ -337,12 +370,16 @@ export default function AdminOrders({ onAdminLogout }) {
                             <Eye size={14}/>
                           </button>
                           <div className="relative">
-                            <button onClick={() => setActionId(c => c === order._id ? null : order._id)} type="button"
+                            <button onClick={(e) => {
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              setActionAnchor({ left: rect.right, top: rect.bottom });
+                              setActionId(c => c === order._id ? null : order._id);
+                            }} type="button"
                               className="grid h-8 w-8 place-items-center rounded-lg border border-[#cfc1b5] text-[#796d66] hover:text-[#fd761a] hover:border-[#fd761a] transition">
                               <MoreVertical size={14}/>
                             </button>
                             {actionId === order._id && (
-                              <ActionMenu machineStatus={order.machineStatus} onAction={action => {
+                              <ActionMenu anchor={actionAnchor} machineStatus={order.machineStatus} onAction={action => {
                                 if (action === "cancel") setCancelModal(order);
                                 else if (action === "delay") setDelayModal(order);
                                 else handleStatusUpdate(order._id, action);
