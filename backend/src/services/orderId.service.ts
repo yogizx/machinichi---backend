@@ -30,3 +30,22 @@ export const generateInvoiceNumber = (): string => {
   const num = crypto.randomInt(1000, 9999);
   return `${prefix}-${year}-${num}`;
 };
+
+/**
+ * Return Merchandise Authorisation number issued at approval time.
+ * Format: RMA-2026-XXXXXX (year + 6 random alphanumeric chars).
+ * Uniqueness within a process is guarded by the in-memory set; the
+ * ReturnRequest.rmaNumber sparse-unique index is the durable guard.
+ */
+export const generateRmaNumber = (): string => {
+  const year = new Date().getFullYear();
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let suffix = '';
+  for (let i = 0; i < 6; i += 1) {
+    suffix += alphabet[crypto.randomInt(0, alphabet.length)];
+  }
+  const id = `RMA-${year}-${suffix}`;
+  if (usedIds.has(id)) return generateRmaNumber();
+  usedIds.add(id);
+  return id;
+};

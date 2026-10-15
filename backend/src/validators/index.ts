@@ -751,6 +751,111 @@ export const returnActionSchema = z.object({
   refundAmount: z.number().positive().optional(),
 });
 
+// ─── Return Request (full lifecycle — validated, tracked, audited) ──
+export const RETURN_REASON_VALUES = [
+  'Damaged product',
+  'Defective or not working',
+  'Wrong item delivered',
+  'Item missing from package',
+  'Size or fit issue',
+  'Product not as described',
+  'Changed mind',
+  'Other',
+] as const;
+
+export const RETURN_RESOLUTION_VALUES = ['refund', 'replacement', 'exchange', 'store_credit'] as const;
+
+const returnItemInputSchema = z.object({
+  // Order-item subdocument id (string form). productId is resolved server-side.
+  orderItemId: z.string().min(1, 'Order item is required'),
+  quantity: z.number().int().positive().max(99),
+  reason: z.enum(RETURN_REASON_VALUES),
+  description: z.string().max(2000).optional().default(''),
+});
+
+export const createFullReturnSchema = z.object({
+  orderId: objectIdSchema,
+  items: z.array(returnItemInputSchema).min(1, 'Select at least one item to return').max(20),
+  resolution: z.enum(RETURN_RESOLUTION_VALUES).optional().default('refund'),
+  pickupMode: z.enum(['pickup', 'dropoff']).optional().default('pickup'),
+  description: z.string().max(2000).optional().default(''),
+  images: z.array(z.string().url()).max(5).optional().default([]),
+  pickupAddress: addressDetailSchema.optional(),
+  agreeTerms: z.literal(true, { message: 'You must accept the return terms and declaration.' }),
+}).superRefine((data, ctx) => {
+  if (data.pickupMode === 'pickup' && !data.pickupAddress) {
+    ctx.addIssue({ code: 'custom', path: ['pickupAddress'], message: 'Pickup address is required for courier pickup.' });
+  }
+  for (const item of data.items) {
+    if (item.reason === 'Other' && !(item.description || data.description || '').trim()) {
+      ctx.addIssue({ code: 'custom', path: ['description'], message: 'A description is required when the reason is "Other".' });
+    }
+  }
+  // Product photos are mandatory for every return request: the admin
+  // reviews order details, reason and attached photos before deciding.
+  if ((data.images || []).length === 0) {
+    ctx.addIssue({ code: 'custom', path: ['images'], message: 'At least one product photo is required for every return request.' });
+  }
+});
+
+export const eligibilityCheckSchema = z.object({
+  orderId: objectIdSchema,
+});
+
+export const returnDecisionSchema = z.object({
+  comment: z.string().max(1000).optional().default(''),
+  refundAmount: z.number().positive().optional(),
+});
+
+export const returnRejectSchema = z.object({
+  reason: z.string().min(3, 'A rejection reason is required.').max(1000),
+});
+
+export const schedulePickupSchema = z.object({
+  courier: z.string().min(2).max(100).optional().default('Machinichi Courier'),
+  trackingNumber: z.string().max(100).optional(),
+  pickupDate: z.string().min(1, 'Pickup date is required.').optional(),
+  pickupMode: z.enum(['pickup', 'dropoff']).optional(),
+  instructions: z.string().max(1000).optional().default(''),
+});
+
+export const pickupFailedSchema = z.object({
+  reason: z.string().min(3).max(1000),
+  rescheduleDate: z.string().optional(),
+});
+
+export const confirmReceiptSchema = z.object({
+  receiptDate: z.string().optional(),
+  notes: z.string().max(1000).optional().default(''),
+});
+
+export const inspectReturnSchema = z.object({
+  condition: z.enum(['excellent', 'good', 'damaged', 'defective', 'wrong', 'missing_parts', 'used']),
+  quantityReceived: z.number().int().nonnegative().max(999),
+  findings: z.string().max(2000).optional().default(''),
+  disposition: z.enum(['restock', 'quarantine', 'repair', 'write_off']),
+  passed: z.boolean(),
+  refundEligible: z.boolean().optional(),
+});
+
+export const processRefundSchema = z.object({
+  amount: z.number().positive().optional(),
+  method: z.enum(['original_payment', 'store_credit', 'bank_transfer']).optional().default('original_payment'),
+  transactionRef: z.string().max(100).optional(),
+});
+
+export const refundFailedSchema = z.object({
+  reason: z.string().min(3).max(1000),
+});
+
+export const completeReturnSchema = z.object({
+  comment: z.string().max(1000).optional().default(''),
+});
+
+export const returnNoteSchema = z.object({
+  note: z.string().min(1).max(1000),
+});
+
 // ─── Address ────────────────────────────────────────────────
 export const createAddressSchema = z.object({
   fullName: z.string().min(2).max(100),

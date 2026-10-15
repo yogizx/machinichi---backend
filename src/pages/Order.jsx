@@ -694,6 +694,18 @@ function Order() {
                                 </motion.button>
                               ))}
 
+                              {status === "delivered" && (
+                                <motion.button
+                                  whileHover={{ y: -2 }}
+                                  whileTap={{ scale: 0.96 }}
+                                  className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-violet-300 bg-violet-50 px-4 text-[12px] font-black text-violet-700 shadow-[0_1px_3px_rgba(0,0,0,0.03)] transition-all hover:border-violet-500 hover:text-violet-800 hover:shadow-[0_4px_12px_rgba(139,92,246,0.15)] active:translate-y-0"
+                                  onClick={() => navigate("/return-request", { state: { orderId: order._id, orderRef: displayId } })}
+                                  type="button"
+                                >
+                                  <Undo2 size={13} /> Return
+                                </motion.button>
+                              )}
+
                               {!["cancelled", "returned"].includes(status) && (
                                 <motion.button
                                   whileHover={{ y: -2 }}
