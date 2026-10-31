@@ -20,6 +20,7 @@ import {
   processRefund,
   markRefundFailed,
   completeReturn,
+  refundReturnRequest,
   addReturnNote,
 } from '../controllers/return.controller';
 import { adminMiddleware } from '../middlewares/auth.middleware';
@@ -58,6 +59,7 @@ router.post('/:id/pickup-failed', authMiddleware, adminMiddleware, markPickupFai
 router.post('/:id/confirm-receipt', authMiddleware, adminMiddleware, confirmReceipt);
 router.post('/:id/inspect', authMiddleware, adminMiddleware, inspectReturn);
 router.post('/:id/process-refund', authMiddleware, adminMiddleware, processRefund);
+router.post('/:id/refund', authMiddleware, adminMiddleware, refundReturnRequest);
 router.post('/:id/refund-failed', authMiddleware, adminMiddleware, markRefundFailed);
 router.post('/:id/complete', authMiddleware, adminMiddleware, completeReturn);
 router.post('/:id/notes', authMiddleware, adminMiddleware, addReturnNote);

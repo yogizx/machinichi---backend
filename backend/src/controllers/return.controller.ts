@@ -17,6 +17,7 @@ import {
   refundFailedSchema,
   completeReturnSchema,
   returnNoteSchema,
+  refundReturnSchema,
 } from '../validators';
 import { Types } from 'mongoose';
 import { generateReturnId, generateRmaNumber } from '../services/orderId.service';
@@ -30,6 +31,9 @@ import {
 } from '../services/returnPolicy.service';
 import { releaseStock } from '../services/inventory.service';
 import { createNotification } from '../services/notification.service';
+import { Payment } from '../models/Payment';
+import { createRefund } from '../services/razorpay.service';
+import { REFUNDABLE_STATUSES, resolveRefundAmount, isFullRefund } from '../services/returnRefund.service';
 
 /* ── State machine ──────────────────────────────────────────── */
 
@@ -37,10 +41,10 @@ const ALLOWED_TRANSITIONS: Record<string, string[]> = {
   draft: ['submitted', 'cancelled'],
   submitted: ['under_review', 'approved', 'rejected', 'cancelled'],
   under_review: ['approved', 'rejected', 'cancelled'],
-  approved: ['pickup_scheduled', 'rejected', 'cancelled'],
-  pickup_scheduled: ['item_received', 'pickup_failed', 'cancelled'],
+  approved: ['pickup_scheduled', 'refund_processing', 'rejected', 'cancelled'],
+  pickup_scheduled: ['item_received', 'pickup_failed', 'refund_processing', 'cancelled'],
   pickup_failed: ['pickup_scheduled', 'cancelled'],
-  item_received: ['inspection_completed', 'on_hold'],
+  item_received: ['inspection_completed', 'on_hold', 'refund_processing'],
   inspection_completed: ['refund_processing', 'on_hold', 'rejected'],
   on_hold: ['inspection_completed', 'rejected', 'refund_processing'],
   refund_processing: ['completed', 'refund_failed'],
@@ -875,6 +879,176 @@ export const completeReturn = async (req: AuthRequest, res: Response, next: Next
 
     await notify(doc.userId, 'return_completed', 'Return completed', `Your return ${doc.returnId} is closed. ${doc.resolution === 'refund' ? `₹${doc.refund.amount.toLocaleString('en-IN')} will reach your ${doc.refund.method.replace('_', ' ')} shortly.` : `Your ${doc.resolution.replace('_', ' ')} is confirmed.`}`, { returnId: doc._id });
     sendSuccess(res, { data: doc, message: 'Return completed and customer notified.' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+/* ── Admin: direct gateway refund (post-approval) ───────────── */
+
+/**
+ * Refund a return request directly to the customer.
+ *
+ * Enterprise guarantees:
+ *  - Only admin, only after the return has been approved by the admin.
+ *  - Idempotent: a completed refund can never be issued twice; an
+ *    in-progress refund blocks concurrent attempts.
+ *  - Amount is server-clamped to the captured payment amount (no
+ *    over-refund); partial refunds are supported.
+ *  - The money actually moves through the payment gateway for online
+ *    payments; COD / no-gateway orders are recorded as manual credit.
+ *  - Every outcome (success or failure) is audited in statusHistory and
+ *    the customer is notified; a gateway failure parks the request in
+ *    'refund_failed' so finance can reconcile and retry.
+ */
+export const refundReturnRequest = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  try {
+    if (!req.user?.isAdmin) return sendError(res, 'Admin access required', 403);
+
+    const validation = refundReturnSchema.safeParse(req.body);
+    if (!validation.success) return sendError(res, 'Validation failed', 400, validation.error.issues);
+
+    const doc = await ReturnRequest.findById(req.params.id).populate('orderId');
+    if (!doc) return sendError(res, 'Return request not found', 404);
+    const { id, role } = actorOf(req);
+
+    // Guard 1 — refund is only allowed after admin approval.
+    if (!(REFUNDABLE_STATUSES as readonly string[]).includes(doc.status)) {
+      return sendError(res, `Refund can only be issued after the admin approves the return. Current status: ${doc.status}.`, 400);
+    }
+
+    // Guard 2 — idempotency: prevent double refunds.
+    if (doc.refund?.transactionStatus === 'completed') {
+      return sendError(res, `Refund of ₹${Number(doc.refund.amount || 0).toLocaleString('en-IN')} was already completed${doc.refund.completedAt ? ` on ${new Date(doc.refund.completedAt).toDateString()}` : ''}.`, 400);
+    }
+    if (doc.refund?.transactionStatus === 'processing') {
+      return sendError(res, 'A refund for this return is already in progress. Do not click again.', 409);
+    }
+
+    const orderIdRaw = (doc.orderId as any)?._id ?? doc.orderId;
+    const captured = await Payment.findOne({ orderId: orderIdRaw, status: 'captured' }).sort({ createdAt: -1 });
+    const onlinePayment = captured && captured.razorpayPaymentId ? captured : null;
+    const isOnline = Boolean(onlinePayment);
+
+    // Aggregate guard — sum every refund already settled on this order through
+    // OTHER completed return requests, so partial returns can never be
+    // over-refunded in total (e.g. two returns of ₹100 against ₹200 paid).
+    const priorCompleted = await ReturnRequest.find({
+      orderId: orderIdRaw,
+      _id: { $ne: doc._id },
+      'refund.transactionStatus': 'completed',
+    }).select('refund.amount refundAmount').lean();
+    const alreadyRefunded = priorCompleted.reduce(
+      (sum: number, r: any) => sum + Number(r.refund?.amount ?? r.refundAmount ?? 0),
+      0,
+    );
+
+    // Resolve + clamp the amount (never <= 0, never above the refundable balance).
+    const resolved = resolveRefundAmount(
+      validation.data.amount,
+      Number(doc.refundAmount || 0),
+      onlinePayment ? Number(onlinePayment.amount) : null,
+      alreadyRefunded,
+    );
+    if (!resolved.ok) return sendError(res, resolved.message, 400);
+    const amount = resolved.amount;
+
+    const note = validation.data.note || `Return ${doc.returnId}`;
+
+    // Atomic claim — flip the refund to 'processing' only if it is not already
+    // processing/completed. This closes the concurrency window where two
+    // simultaneous clicks could each pass the in-memory guard above.
+    const claim = await ReturnRequest.updateOne(
+      { _id: doc._id, 'refund.transactionStatus': { $nin: ['processing', 'completed'] } },
+      { $set: { 'refund.transactionStatus': 'processing' } },
+    );
+    if (claim.modifiedCount === 0) {
+      return sendError(res, 'A refund for this return is already in progress or completed.', 409);
+    }
+
+    // Move the lifecycle forward (audit) and persist the in-progress state
+    // BEFORE touching the gateway.
+    if (doc.status !== 'refund_processing') {
+      const t0 = applyTransition(doc, 'refund_processing', id, role, `Refund initiated: ₹${amount.toLocaleString('en-IN')}${isOnline ? ' to original payment method' : ' (manual credit / COD)'}.`);
+      if (!t0.ok) {
+        // Release the atomic claim so the request is not stranded in 'processing'.
+        await ReturnRequest.updateOne({ _id: doc._id }, { $set: { 'refund.transactionStatus': 'pending' } });
+        return sendError(res, t0.message, 400);
+      }
+    }
+    doc.refundAmount = amount;
+    doc.refund.amount = amount;
+    doc.refund.method = isOnline ? 'original_payment' : 'store_credit';
+    doc.refund.initiatedBy = id;
+    doc.refund.initiatedAt = new Date();
+    doc.refund.transactionStatus = 'processing';
+    doc.refund.failureReason = undefined;
+    doc.refund.paymentReference = '';
+    await doc.save();
+
+    try {
+      let refundEntity: any = null;
+      if (onlinePayment) {
+        // Real money movement via the payment gateway.
+        refundEntity = await createRefund(onlinePayment.razorpayPaymentId!, amount);
+        onlinePayment.refundId = refundEntity.id;
+        onlinePayment.refundAmount = amount;
+        onlinePayment.refundReason = note;
+        onlinePayment.refundedAt = new Date();
+        onlinePayment.status = isFullRefund(amount, Number(onlinePayment.amount)) ? 'refunded' : 'captured';
+        await onlinePayment.save();
+      }
+
+      // Finalise the return lifecycle with a full audit entry.
+      const t1 = applyTransition(doc, 'completed', id, role, `Refund of ₹${amount.toLocaleString('en-IN')} issued${isOnline ? ` (ref ${refundEntity?.id})` : ' as manual credit'}.`);
+      if (!t1.ok) return sendError(res, t1.message, 400);
+      doc.handledBy = id;
+      doc.refund.transactionStatus = 'completed';
+      doc.refund.completedAt = new Date();
+      doc.refund.paymentReference = refundEntity?.id || '';
+      doc.timeline.push({ stage: 'Refunded', completedAt: new Date(), isActive: true });
+      await doc.save();
+
+      // Keep the order's payment state consistent.
+      try {
+        const order = doc.orderId as any;
+        if (order) {
+          const capturedTotal = onlinePayment ? Number(onlinePayment.amount) : Number(order.orderTotal || order.totalAmount || 0);
+          const allItemsReturned = (order.items || []).every((oi: any) =>
+            doc.items.some((ri: any) => String(ri.orderItemId) === String(oi._id) && ri.returnQuantity >= oi.quantity),
+          );
+          const totalRefunded = alreadyRefunded + amount;
+          if (doc.resolution === 'refund') {
+            if (allItemsReturned || (capturedTotal > 0 && totalRefunded >= capturedTotal - 1e-6)) {
+              order.status = 'returned';
+              order.orderStatus = 'Returned';
+              order.returnedAt = new Date();
+              order.paymentStatus = 'Refunded';
+            } else if (order.paymentStatus === 'Paid') {
+              order.paymentStatus = 'Partially Refunded';
+            }
+            await order.save();
+          }
+        }
+      } catch {
+        // Order rollup must not fail the refund.
+      }
+
+      await notify(doc.userId, 'return_refunded', 'Refund issued', `₹${amount.toLocaleString('en-IN')} has been refunded for return ${doc.returnId}${isOnline ? ' to your original payment method.' : '.'}`, { returnId: doc._id });
+
+      sendSuccess(res, { data: doc, message: `Refund of ₹${amount.toLocaleString('en-IN')} issued successfully.` });
+    } catch (err: any) {
+      // Gateway failure — park in refund-pending so finance can retry after reconciling.
+      const reason = err?.message || 'Payment gateway error';
+      doc.refund.transactionStatus = 'failed';
+      doc.refund.failureReason = reason;
+      doc.refund.paymentReference = '';
+      const tf = applyTransition(doc, 'refund_failed', id, role, `Refund failed: ${reason}`);
+      void tf;
+      await doc.save();
+      await notify(doc.userId, 'return_refund_failed', 'Refund failed', `The refund for return ${doc.returnId} failed: ${reason}. It stays open in refund-pending and finance has been alerted.`, { returnId: doc._id });
+      return sendError(res, `Refund failed: ${reason}. The request is held in refund-pending for retry.`, 502);
+    }
   } catch (error) {
     next(error);
   }

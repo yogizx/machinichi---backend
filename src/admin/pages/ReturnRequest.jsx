@@ -73,6 +73,18 @@ function StatusBadge({ status }) {
   );
 }
 
+// Direct refund action — available once the admin has approved the return.
+const REFUND_ACTION = {
+  key: "refund-now",
+  label: "Refund Amount",
+  cls: "bg-emerald-600 hover:bg-emerald-700 text-white",
+  endpoint: (id) => `/returns/${id}/refund`,
+  fields: [
+    { name: "amount", label: "Refund amount (₹)", type: "number", required: false },
+    { name: "note", label: "Refund note (optional)", type: "text", required: false },
+  ],
+};
+
 /* Per-status admin actions → { label, endpoint, fields } */
 function actionsFor(status) {
   const c = canon(status);
@@ -90,11 +102,13 @@ function actionsFor(status) {
       ];
     case "approved":
       return [
+        REFUND_ACTION,
         { key: "pickup", label: "Schedule Pickup", cls: "bg-blue-600 hover:bg-blue-700 text-white", endpoint: (id) => `/returns/${id}/schedule-pickup`, fields: [{ name: "courier", label: "Courier", type: "text", required: false }, { name: "trackingNumber", label: "Tracking / AWB number", type: "text", required: false }, { name: "pickupDate", label: "Pickup date", type: "date", required: false }, { name: "pickupMode", label: "Mode (pickup / dropoff)", type: "text", required: false }, { name: "instructions", label: "Instructions for customer", type: "text", required: false }] },
         { key: "receipt", label: "Record Receipt", cls: "bg-[#3a1100] hover:bg-[#fd761a] text-white", endpoint: (id) => `/returns/${id}/confirm-receipt`, fields: [{ name: "notes", label: "Receipt notes", type: "text", required: false }] },
       ];
     case "pickup_scheduled":
       return [
+        REFUND_ACTION,
         { key: "receipt", label: "Confirm Item Received", cls: "bg-[#3a1100] hover:bg-[#fd761a] text-white", endpoint: (id) => `/returns/${id}/confirm-receipt`, fields: [{ name: "notes", label: "Receipt notes", type: "text", required: false }] },
         { key: "pickupFailed", label: "Mark Pickup Failed", cls: "bg-orange-600 hover:bg-orange-700 text-white", endpoint: (id) => `/returns/${id}/pickup-failed`, fields: [{ name: "reason", label: "Failure reason", type: "text", required: true }, { name: "rescheduleDate", label: "Reschedule date (optional)", type: "date", required: false }] },
       ];
@@ -104,15 +118,17 @@ function actionsFor(status) {
       ];
     case "item_received":
       return [
+        REFUND_ACTION,
         { key: "inspect", label: "Inspect Item", cls: "bg-blue-600 hover:bg-blue-700 text-white", endpoint: (id) => `/returns/${id}/inspect`, fields: [{ name: "condition", label: "Condition (excellent/good/damaged/defective/wrong/missing_parts/used)", type: "text", required: true }, { name: "quantityReceived", label: "Quantity received", type: "number", required: true }, { name: "disposition", label: "Disposition (restock/quarantine/repair/write_off)", type: "text", required: true }, { name: "passed", label: "Passed? (true/false)", type: "text", required: true }, { name: "findings", label: "Findings", type: "text", required: false }] },
       ];
     case "inspection_completed":
       return [
-        { key: "refund", label: "Start Resolution", cls: "bg-emerald-600 hover:bg-emerald-700 text-white", endpoint: (id) => `/returns/${id}/process-refund`, fields: [{ name: "amount", label: "Amount (defaults to calculated)", type: "number", required: false }, { name: "method", label: "Method (original_payment/store_credit/bank_transfer)", type: "text", required: false }, { name: "transactionRef", label: "Payment reference", type: "text", required: false }] },
+        REFUND_ACTION,
         { key: "reject", label: "Reject Refund", cls: "bg-rose-600 hover:bg-rose-700 text-white", endpoint: (id) => `/returns/${id}/reject`, fields: [{ name: "reason", label: "Rejection reason", type: "text", required: true }] },
       ];
     case "on_hold":
       return [
+        REFUND_ACTION,
         { key: "inspect", label: "Re-inspect", cls: "bg-blue-600 hover:bg-blue-700 text-white", endpoint: (id) => `/returns/${id}/inspect`, fields: [{ name: "condition", label: "Condition", type: "text", required: true }, { name: "quantityReceived", label: "Quantity received", type: "number", required: true }, { name: "disposition", label: "Disposition", type: "text", required: true }, { name: "passed", label: "Passed? (true/false)", type: "text", required: true }, { name: "findings", label: "Findings", type: "text", required: false }] },
         { key: "reject", label: "Reject", cls: "bg-rose-600 hover:bg-rose-700 text-white", endpoint: (id) => `/returns/${id}/reject`, fields: [{ name: "reason", label: "Rejection reason", type: "text", required: true }] },
       ];
@@ -123,7 +139,7 @@ function actionsFor(status) {
       ];
     case "refund_failed":
       return [
-        { key: "refund", label: "Retry Resolution", cls: "bg-blue-600 hover:bg-blue-700 text-white", endpoint: (id) => `/returns/${id}/process-refund`, fields: [{ name: "amount", label: "Amount", type: "number", required: false }, { name: "transactionRef", label: "Payment reference", type: "text", required: false }] },
+        REFUND_ACTION,
         { key: "complete", label: "Force Complete", cls: "bg-emerald-600 hover:bg-emerald-700 text-white", endpoint: (id) => `/returns/${id}/complete`, fields: [{ name: "comment", label: "Closing note", type: "text", required: false }] },
       ];
     default:
@@ -618,7 +634,7 @@ export default function ReturnRequest({ onAdminLogout }) {
                       <div className="grid grid-cols-2 gap-2">
                         {availableActions.map((a) => (
                           <button key={a.key} type="button" disabled={actionLoading}
-                            onClick={() => { setActiveAction(a); setFormValues({}); setFormError(""); }}
+                            onClick={() => { setActiveAction(a); setFormError(""); setFormValues(a.key === "refund-now" ? { amount: view?.refundAmount ?? "" } : {}); }}
                             className={`h-10 rounded-xl text-[11.5px] font-black transition disabled:opacity-40 ${a.cls} ${activeAction?.key === a.key ? "ring-2 ring-offset-1 ring-[#fd761a]" : ""}`}>
                             {a.label}
                           </button>
@@ -635,6 +651,8 @@ export default function ReturnRequest({ onAdminLogout }) {
                               <span className="text-[10.5px] font-black uppercase tracking-wider text-[#9a8b82]">{f.label}{f.required ? " *" : ""}</span>
                               <input
                                 type={f.type === "date" ? "date" : f.type === "number" ? "number" : "text"}
+                                step={f.type === "number" ? "0.01" : undefined}
+                                min={f.type === "number" ? 0 : undefined}
                                 value={formValues[f.name] ?? ""}
                                 onChange={(e) => setFormValues((v) => ({ ...v, [f.name]: e.target.value }))}
                                 className="mt-1.5 h-10 w-full rounded-lg border border-[#e5d8cd] bg-white px-3 text-[12.5px] outline-none focus:border-[#fd761a]"
@@ -642,11 +660,16 @@ export default function ReturnRequest({ onAdminLogout }) {
                             </label>
                           ))}
                           {activeAction.fields.length === 0 ? <p className="text-[12px] text-[#796d66]">No extra input needed.</p> : null}
+                          {activeAction.key === "refund-now" ? (
+                            <div className="rounded-lg border border-emerald-200 bg-emerald-50/70 px-3 py-2.5 text-[12px] font-bold text-emerald-800">
+                              This will refund the amount to the customer&rsquo;s original payment method. This action is final and cannot be undone.
+                            </div>
+                          ) : null}
                         </div>
                         {formError ? <p className="mt-2 text-[12px] font-bold text-rose-700">{formError}</p> : null}
                         <div className="mt-3 flex gap-2">
                           <button onClick={runAction} disabled={actionLoading} type="button" className="flex h-10 flex-1 items-center justify-center gap-2 rounded-xl bg-[#3a1100] text-[12px] font-black text-white transition hover:bg-[#fd761a] disabled:opacity-50">
-                            {actionLoading ? <Loader2 size={13} className="animate-spin" /> : <CheckCircle2 size={13} />} Confirm
+                            {actionLoading ? <Loader2 size={13} className="animate-spin" /> : <CheckCircle2 size={13} />} {activeAction.key === "refund-now" ? "Confirm Refund" : "Confirm"}
                           </button>
                           <button onClick={() => { setActiveAction(null); setFormError(""); }} type="button" className="h-10 rounded-xl border border-[#e5d8cd] bg-white px-4 text-[12px] font-black text-[#5c514b]">
                             Cancel

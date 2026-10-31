@@ -848,6 +848,13 @@ export const refundFailedSchema = z.object({
   reason: z.string().min(3).max(1000),
 });
 
+// Direct, gateway-backed refund issued by admin once a return is approved.
+// Amount is optional — when omitted the calculated refund amount is used.
+export const refundReturnSchema = z.object({
+  amount: z.number().positive().optional(),
+  note: z.string().max(1000).optional().default(''),
+});
+
 export const completeReturnSchema = z.object({
   comment: z.string().max(1000).optional().default(''),
 });
