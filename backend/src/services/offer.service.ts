@@ -303,6 +303,6 @@ export const getActiveOfferCoupons = async (): Promise<any[]> => {
     status: 'active',
     startsAt: { $lte: new Date() },
     expiresAt: { $gte: new Date() },
-    $expr: { $or: [{ $eq: ['$usageLimit', 0] }, { $lt: ['$usedCount', '$usageLimit'] }] },
+    $expr: { $or: [{ $lte: [{ $ifNull: ['$usageLimit', 0] }, 0] }, { $lt: ['$usedCount', '$usageLimit'] }] }, // usageLimit 0 / empty / missing = unlimited
   }).lean();
 };

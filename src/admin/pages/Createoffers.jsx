@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   CalendarDays,
   Check,
@@ -21,7 +21,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import axios from "axios";
 import AdminLayout from "../components/AdminLayout";
 
@@ -47,6 +47,10 @@ const offerTypeToApi = {
   "Scratch Card": "scratch_card",
   "Free Delivery": "free_delivery",
 };
+
+const offerTypeFromApi = Object.fromEntries(
+  Object.entries(offerTypeToApi).map(([label, value]) => [value, label]),
+);
 
 const offerCodePrefixes = {
   Coupon: "ORG",
@@ -227,6 +231,9 @@ const formatInr = (value) => `₹${Math.max(0, Math.round(value)).toLocaleString
 
 function Createoffers({ onAdminLogout }) {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const editId = searchParams.get("edit");
+  const [editLoading, setEditLoading] = useState(Boolean(editId));
   const [selectedOfferType, setSelectedOfferType] = useState("Coupon");
   const [productView, setProductView] = useState("All Products");
   const [productSearch, setProductSearch] = useState("");
@@ -588,6 +595,75 @@ function Createoffers({ onAdminLogout }) {
     return err.response?.data?.message || "Failed to save offer";
   };
 
+  // Edit mode: /admin/create-offers?edit=<couponId> loads the existing offer into this form.
+  useEffect(() => {
+    if (!editId) return undefined;
+    let cancelled = false;
+
+    const pad = (n) => String(n).padStart(2, "0");
+    const splitDateTime = (iso) => {
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return null;
+      const h24 = d.getHours();
+      return {
+        date: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
+        hour: pad(h24 % 12 || 12),
+        minute: pad(d.getMinutes() - (d.getMinutes() % 5)),
+        ampm: h24 >= 12 ? "PM" : "AM",
+      };
+    };
+
+    const loadOffer = async () => {
+      setEditLoading(true);
+      try {
+        const { data } = await API.get(`/coupons/${editId}`);
+        const coupon = data?.data;
+        if (cancelled || !coupon) return;
+
+        const start = splitDateTime(coupon.startsAt);
+        const end = splitDateTime(coupon.expiresAt);
+        const typeLabel = offerTypeFromApi[coupon.offerType] || "Coupon";
+
+        setSelectedOfferType(typeLabel);
+        setFormData((current) => ({
+          ...current,
+          name: coupon.name || "",
+          description: coupon.description || "",
+          couponCode: coupon.code || "",
+          discountValue: typeLabel === "Scratch Card" ? "" : String(coupon.discountValue ?? ""),
+          discountType: coupon.discountType === "Free Delivery" ? "Free Delivery" : "Percentage (%)",
+          minPurchase: String(coupon.minOrderAmount ?? 0),
+          minQuantity: String(coupon.minQuantity ?? 1),
+          totalUsageLimit: coupon.usageLimit > 0 ? String(coupon.usageLimit) : "",
+          limitPerCustomer: String(coupon.perUserLimit ?? 1),
+          ...(start ? { startDate: start.date, startHour: start.hour, startMinute: start.minute, startAmPm: start.ampm } : {}),
+          ...(end ? { endDate: end.date, endHour: end.hour, endMinute: end.minute, endAmPm: end.ampm } : {}),
+        }));
+        if (typeLabel === "Scratch Card" && Array.isArray(coupon.scratchRules) && coupon.scratchRules.length) {
+          setScratchRules(
+            coupon.scratchRules.map((rule) => ({
+              ...createScratchRule(rule.basis, String(rule.threshold ?? ""), String(rule.discountValue ?? "")),
+              discountType: rule.discountType === "Fixed" ? "Fixed Amount" : "Percentage (%)",
+              label: rule.label || "",
+            })),
+          );
+        }
+        setFreeDeliveryDistricts(dedupeDistrictList(coupon.freeDeliveryDistricts || []));
+        setDatesConfirmed(Boolean(start && end));
+        setSaveError("");
+      } catch (err) {
+        if (!cancelled) setSaveError(err.response?.data?.message || "Failed to load this offer for editing");
+      } finally {
+        if (!cancelled) setEditLoading(false);
+      }
+    };
+
+    loadOffer();
+    return () => {
+      cancelled = true;
+    };
+  }, [editId]);
+
   const saveOffer = async (status) => {
     if (selectedOfferType === "Bundle" && !submittedBundleOffer) {
       setBundleError("Submit the bundle offer before saving this offer.");
@@ -596,7 +672,7 @@ function Createoffers({ onAdminLogout }) {
     }
 
     const rawUsageLimit = formData.totalUsageLimit.trim().toLowerCase();
-    const usageLimitValue = rawUsageLimit === "unlimited" ? 0 : toFiniteNumber(formData.totalUsageLimit, -1);
+    const usageLimitValue = rawUsageLimit === "" || rawUsageLimit === "unlimited" ? 0 : toFiniteNumber(formData.totalUsageLimit, -1);
     const perCustomerValue = toFiniteNumber(formData.limitPerCustomer, 0);
 
     if (selectedOfferType !== "Bundle") {
@@ -612,9 +688,8 @@ function Createoffers({ onAdminLogout }) {
       if (!formData.startDate) { setSaveError("Start date is required"); return; }
       if (!formData.endDate) { setSaveError("End date is required"); return; }
       if (!datesConfirmed) { setSaveError("Please confirm dates by clicking OK"); return; }
-      if (!formData.totalUsageLimit.trim()) { setSaveError("Total usage limit is required (enter 0 or unlimited)"); return; }
       if (!Number.isInteger(usageLimitValue) || usageLimitValue < 0) {
-        setSaveError("Total usage limit must be 0 (unlimited) or a whole number");
+        setSaveError("Total usage limit must be a whole number, or leave it empty / type unlimited for unlimited");
         return;
       }
       if (!formData.limitPerCustomer.trim()) { setSaveError("Limit per customer is required"); return; }
@@ -689,7 +764,15 @@ function Createoffers({ onAdminLogout }) {
           isActive: status === "Active",
           status: status === "Active" ? "active" : "draft",
         };
-        await API.post("/coupons", payload);
+        if (editId) {
+          // Editing keeps the offer's current Active/Draft state; only its details are updated.
+          const editablePayload = { ...payload };
+          delete editablePayload.isActive;
+          delete editablePayload.status;
+          await API.put(`/coupons/${editId}`, editablePayload);
+        } else {
+          await API.post("/coupons", payload);
+        }
       }
       navigate("/admin/offers-coupons");
     } catch (err) {
@@ -710,7 +793,7 @@ function Createoffers({ onAdminLogout }) {
         <div className="flex flex-col gap-4 border-b border-[#eaded6] bg-[#fffaf6] px-4 py-5 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
           <div>
             <h1 className="text-[28px] font-black leading-none tracking-[-0.04em] text-[#21150f]">
-              Create New Offer
+              {editId ? "Edit Offer" : "Create New Offer"}
             </h1>
             <p className="mt-1 text-[13px] font-medium text-[#6d5e55]">
               Configure promotions and discounts for your artisanal products.
@@ -732,9 +815,9 @@ function Createoffers({ onAdminLogout }) {
               className="h-11 rounded-full bg-[#d85f0d] px-8 text-[13px] font-black uppercase tracking-[0.04em] text-white shadow-[0_12px_24px_rgba(216,95,13,0.24)] transition hover:-translate-y-0.5 hover:bg-[#bf5108] active:translate-y-0 active:scale-[0.98] disabled:opacity-50"
               onClick={() => saveOffer("Active")}
               type="button"
-              disabled={saving}
+              disabled={saving || editLoading}
             >
-              {saving ? "Saving..." : "Create Offer"}
+              {saving ? "Saving..." : editId ? "Save Changes" : "Create Offer"}
             </button>
           </div>
         </div>
@@ -1241,13 +1324,14 @@ function Createoffers({ onAdminLogout }) {
 
           <section className="mt-4 grid gap-4 xl:grid-cols-[340px_minmax(0,1fr)]">
             <Panel icon={Timer} title="Usage Limits">
-              <Field label={<span>Total Usage Limit <span className="text-red-500">*</span></span>}>
+              <Field label={<span>Total Usage Limit</span>}>
                 <input
                   className="admin-input"
                   onChange={(event) => updateField("totalUsageLimit", event.target.value)}
                   placeholder="Unlimited"
                   value={formData.totalUsageLimit}
                 />
+                <p className="mt-1.5 text-[11px] font-medium text-[#7a6b62]">For unlimited, type unlimited or keep this empty.</p>
               </Field>
               <Field label={<span>Limit Per Customer <span className="text-red-500">*</span></span>}>
                 <input

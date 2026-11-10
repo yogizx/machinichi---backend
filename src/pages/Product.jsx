@@ -12,6 +12,7 @@ const sortOptions = ["Popularity", "Price: Low to High", "Price: High to Low"];
 const PRODUCTS_PER_PAGE = 12;
 const ratingOptions = [5, 4, 3, 2, 1];
 const priceBounds = { min: 200, max: 2000 };
+const LOW_STOCK_LIMIT = 5;
 
 function slugify(name) {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
@@ -718,6 +719,9 @@ function ProductCard({ product, index, isFavorite, onAddToCart, onFavoriteToggle
   const navigate = useNavigate();
   const addToast = useToast();
   const [selectedSize, setSelectedSize] = useState(product.sizes[0]);
+  const availableStock = product.availableStock;
+  const isOutOfStock = availableStock != null && availableStock <= 0;
+  const isLowStock = availableStock != null && availableStock > 0 && availableStock <= LOW_STOCK_LIMIT;
   const selectedPrice = formatPriceForSize(product.price, product.sizes[0], selectedSize);
   const selectedOldPrice = formatPriceForSize(product.oldPrice, product.sizes[0], selectedSize);
   const selectedProduct = {
@@ -817,6 +821,13 @@ function ProductCard({ product, index, isFavorite, onAddToCart, onFavoriteToggle
             {selectedOldPrice ? <span className="text-[13px] font-bold text-[#9c8f87] line-through">{selectedOldPrice}</span> : null}
             {product.discountPercent > 0 ? <span className="text-[10px] font-black text-[#fd761a]">({product.discountPercent}% OFF)</span> : null}
           </div>
+          {isOutOfStock ? (
+            <p className="mt-2 text-[13px] font-black text-[#dc2626]">Out of Stock</p>
+          ) : isLowStock ? (
+            <p className="mt-2 text-[13px] font-black text-[#fd761a]">
+              Only {availableStock} {availableStock === 1 ? "product" : "products"} left
+            </p>
+          ) : null}
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
           {product.sizes.map((size) => (

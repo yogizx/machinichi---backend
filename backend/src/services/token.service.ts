@@ -46,3 +46,8 @@ export const verifyRefreshToken = async (token: string) => {
 export const revokeRefreshToken = async (token: string) => {
   await RefreshToken.findOneAndUpdate({ token }, { isRevoked: true });
 };
+
+// Signs the user out everywhere (used after a password reset so a stolen session cannot survive it).
+export const revokeAllUserRefreshTokens = async (userId: Types.ObjectId | string) => {
+  await RefreshToken.updateMany({ user: userId, isRevoked: false }, { isRevoked: true });
+};

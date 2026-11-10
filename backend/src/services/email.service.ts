@@ -349,6 +349,36 @@ export const sendEmailVerificationEmail = async (to: string, otp: string, userNa
   });
 };
 
+// Signup OTP: sent to the e-mail address the user typed. Valid for 5 minutes.
+export const sendSignupOtpEmail = async (to: string, otp: string) => {
+  if (!hasSmtpConfig() && process.env.NODE_ENV === 'production') {
+    throw new Error('SMTP configuration missing in environment variables');
+  }
+
+  const content = `
+    <p class="greeting">Verify your email address</p>
+    <p class="text">Use the code below to verify your email and finish creating your ${BRAND.name} account.</p>
+    <div class="otp-box">${otp}</div>
+    <p class="text-muted">This code is valid for <strong>5 minutes</strong>. Do not share it with anyone.</p>
+    <div class="security-badge">
+      <span style="font-size:18px;">🛡️</span>
+      <span>We will never ask for your password or OTP via email or phone.</span>
+    </div>
+  `;
+
+  const info = await getTransporter().sendMail({
+    from: `"${BRAND.name}" <${process.env.EMAIL_FROM}>`,
+    to,
+    subject: `Your ${BRAND.name} verification code`,
+    text: `Your ${BRAND.name} verification code is ${otp}. It is valid for 5 minutes. Do not share it with anyone.`,
+    html: buildHtml(content),
+  });
+
+  if (!(info.accepted && info.accepted.includes(to))) {
+    throw new Error('Recipient was not accepted by SMTP server');
+  }
+};
+
 export const sendGoogleWelcomeEmail = async (to: string, userName: string) => {
   const content = `
     <p class="greeting">Welcome to ${BRAND.name}, ${userName}!</p>

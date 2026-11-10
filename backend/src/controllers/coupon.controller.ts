@@ -64,7 +64,7 @@ export const getActiveCoupons = async (req: AuthRequest, res: Response, next: Ne
       status: 'active',
       startsAt: { $lte: now },
       expiresAt: { $gte: now },
-      $expr: { $or: [{ $eq: ['$usageLimit', 0] }, { $lt: ['$usedCount', '$usageLimit'] }] },
+      $expr: { $or: [{ $lte: [{ $ifNull: ['$usageLimit', 0] }, 0] }, { $lt: ['$usedCount', '$usageLimit'] }] }, // usageLimit 0 / empty / missing = unlimited
     }).sort({ createdAt: -1 });
     sendSuccess(res, { data: coupons });
   } catch (error) {

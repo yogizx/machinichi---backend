@@ -1,7 +1,8 @@
 import { ArrowLeft, ArrowRight, CheckCircle2, Eye, EyeOff, Mail, ShieldCheck, KeyRound, Loader2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import api from "../services/api";
+import PasswordStrengthMeter from "../components/PasswordStrengthMeter";
 
 const passwordRules = [
   { label: "Minimum 8 characters", test: (v) => v.length >= 8 },
@@ -15,7 +16,12 @@ const passwordRules = [
 function Forgotpassword() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const resetToken = searchParams.get("token");
+  // The reset token is read once and then removed from the address bar, so it does not stay in
+  // the browser history / screenshots / shared URLs after the page has loaded.
+  const [resetToken] = useState(() => searchParams.get("token") || "");
+  useEffect(() => {
+    if (resetToken) window.history.replaceState(null, "", window.location.pathname);
+  }, [resetToken]);
 
   const [view, setView] = useState(resetToken ? "reset" : "forgot");
   const [email, setEmail] = useState("");
@@ -46,7 +52,7 @@ function Forgotpassword() {
     setLoading(true);
     try {
       await api.post("/auth/forgot-password", { email: email.trim() });
-      setSuccess("If a Machinichi account exists with that email, a password reset link has been sent.");
+      setSuccess(`Reset link sent successfully to ${email.trim()}. Please check your email inbox (and spam folder).`);
     } catch (err) {
       const msg = err.response?.data?.message || "Failed to send reset email. Please try again.";
       setError(msg);
@@ -78,6 +84,7 @@ function Forgotpassword() {
     e.preventDefault();
     setError(""); setSuccess("");
     if (!canReset) return;
+    if (!resetToken) { setError("This reset link is invalid. Please request a new one."); return; }
     setLoading(true);
     try {
       await api.post("/auth/reset-password", {
@@ -139,13 +146,19 @@ function Forgotpassword() {
                             className="ml-1 flex-1 bg-transparent text-[16px] text-[#312b26] outline-none placeholder:text-[#b8b0aa]"
                             placeholder={lbl}
                             type={show ? "text" : "password"}
+                            autoComplete="new-password"
+                            maxLength={128}
                             value={val}
                             onChange={(e) => setVal(e.target.value)}
                           />
+                          {idx === 1 && passwordsMatch && <CheckCircle2 size={19} className="ml-2 shrink-0 text-green-500" aria-label="Passwords match" />}
                           <button type="button" onClick={toggle} className="ml-2 text-[#9d948d]">
                             {show ? <EyeOff size={17} /> : <Eye size={17} />}
                           </button>
                         </div>
+                        {idx === 0 && <PasswordStrengthMeter password={newPassword} showRules={false} />}
+                        {idx === 1 && passwordsMatch && <p className="mt-1 text-[12px] font-semibold text-green-600">Passwords match</p>}
+                        {idx === 1 && confirmPassword.length > 0 && !passwordsMatch && <p className="mt-1 text-[12px] font-semibold text-red-600">Passwords do not match yet</p>}
                       </div>
                     );
                   })}

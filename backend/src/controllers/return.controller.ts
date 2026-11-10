@@ -134,6 +134,37 @@ const notify = async (
   }
 };
 
+/**
+ * Runs the existing admin refund handler in-process, so an automatic refund goes through exactly
+ * the same guards, over-refund checks, idempotency claim and gateway call as the "Refund Amount"
+ * button, and captures its response instead of writing it to the HTTP client.
+ */
+const runRefundInternally = async (req: AuthRequest, returnId: string) => {
+  let statusCode = 200;
+  let payload: any = null;
+  let thrown: any = null;
+  const capture: any = {
+    status(code: number) {
+      statusCode = code;
+      return capture;
+    },
+    json(body: any) {
+      payload = body;
+      return capture;
+    },
+  };
+  const internalReq = { user: req.user, params: { id: returnId }, body: {} } as unknown as AuthRequest;
+  await refundReturnRequest(
+    internalReq,
+    capture as Response,
+    ((err?: unknown) => {
+      thrown = err;
+    }) as unknown as NextFunction,
+  );
+  if (thrown) return { statusCode: 500, payload: { message: thrown?.message || 'Refund failed' } };
+  return { statusCode, payload };
+};
+
 const pickupInstructions = (doc: any): string => {
   if (doc.pickupMode === 'dropoff') {
     return 'Drop off the packed item(s) at the nearest Machinichi collection point with your RMA number written on the package.';
@@ -227,7 +258,10 @@ export const getEligibleOrders = async (req: AuthRequest, res: Response, next: N
           returnable,
         });
       }
-      if (items.some((i) => i.eligible)) {
+      // List every delivered order that is still inside its return window. Items that fail the
+      // policy (e.g. a non-returnable product) are shown disabled with the reason, instead of the
+      // whole order silently disappearing from the Return Request page.
+      if (items.some((i) => i.daysSinceDelivery <= i.windowDays)) {
         eligible.push({
           _id: order._id,
           orderId: order.orderId,
@@ -677,8 +711,32 @@ export const confirmReceipt = async (req: AuthRequest, res: Response, next: Next
     if (validation.data.receiptDate) doc.shipment.receiptDate = new Date(validation.data.receiptDate);
     doc.timeline.push({ stage: 'Item Received', completedAt: new Date(), isActive: true });
     await doc.save();
-    await notify(doc.userId, 'return_received', 'Return item received', `We received your return ${doc.returnId} at the warehouse. Inspection starts now.`, { returnId: doc._id });
-    sendSuccess(res, { data: doc, message: 'Item receipt confirmed.' });
+    // Product collected -> refund the customer automatically to the SAME account / payment method
+    // that was used to pay (Razorpay refunds always go back to the original source). Only online
+    // (gateway-captured) payments are refunded automatically; COD / manual returns stay open so the
+    // admin can settle them by hand.
+    const capturedPayment = doc.resolution === 'refund'
+      ? await Payment.findOne({ orderId: doc.orderId, status: 'captured' }).sort({ createdAt: -1 })
+      : null;
+    const canAutoRefund = Boolean(capturedPayment && capturedPayment.razorpayPaymentId);
+
+    if (!canAutoRefund) {
+      await notify(doc.userId, 'return_received', 'Return item received', `We received your return ${doc.returnId} at the warehouse. Inspection starts now.`, { returnId: doc._id });
+      return sendSuccess(res, { data: doc, message: 'Item receipt confirmed.' });
+    }
+
+    await notify(doc.userId, 'return_received', 'Return item collected', `We collected your return ${doc.returnId}. Your refund will be credited to your original payment method within 5 minutes.`, { returnId: doc._id });
+
+    const refundResult = await runRefundInternally(req, String(doc._id));
+    const latest = (await ReturnRequest.findById(doc._id)) ?? doc;
+    if (refundResult.statusCode >= 400) {
+      return sendSuccess(res, {
+        data: latest,
+        refundError: true,
+        message: `Product collected, but the automatic refund failed: ${refundResult.payload?.message || 'unknown error'}`,
+      });
+    }
+    sendSuccess(res, { data: latest, message: `Product collected. ${refundResult.payload?.message || 'Refund issued.'}` });
   } catch (error) {
     next(error);
   }
@@ -912,9 +970,9 @@ export const refundReturnRequest = async (req: AuthRequest, res: Response, next:
     if (!doc) return sendError(res, 'Return request not found', 404);
     const { id, role } = actorOf(req);
 
-    // Guard 1 — refund is only allowed after admin approval.
+    // Guard 1 — refund is only allowed once the return is approved AND the product has been collected.
     if (!(REFUNDABLE_STATUSES as readonly string[]).includes(doc.status)) {
-      return sendError(res, `Refund can only be issued after the admin approves the return. Current status: ${doc.status}.`, 400);
+      return sendError(res, `Refund can only be issued after the product is collected. Current status: ${doc.status}.`, 400);
     }
 
     // Guard 2 — idempotency: prevent double refunds.
@@ -990,7 +1048,7 @@ export const refundReturnRequest = async (req: AuthRequest, res: Response, next:
       let refundEntity: any = null;
       if (onlinePayment) {
         // Real money movement via the payment gateway.
-        refundEntity = await createRefund(onlinePayment.razorpayPaymentId!, amount);
+        refundEntity = await createRefund(onlinePayment.razorpayPaymentId!, amount, 'optimum');
         onlinePayment.refundId = refundEntity.id;
         onlinePayment.refundAmount = amount;
         onlinePayment.refundReason = note;
@@ -1000,7 +1058,7 @@ export const refundReturnRequest = async (req: AuthRequest, res: Response, next:
       }
 
       // Finalise the return lifecycle with a full audit entry.
-      const t1 = applyTransition(doc, 'completed', id, role, `Refund of ₹${amount.toLocaleString('en-IN')} issued${isOnline ? ` (ref ${refundEntity?.id})` : ' as manual credit'}.`);
+      const t1 = applyTransition(doc, 'completed', id, role, `Refund of ₹${amount.toLocaleString('en-IN')} issued${isOnline ? ` (ref ${refundEntity?.id}${refundEntity?.speed_processed ? `, ${refundEntity.speed_processed} speed` : ''})` : ' as manual credit'}.`);
       if (!t1.ok) return sendError(res, t1.message, 400);
       doc.handledBy = id;
       doc.refund.transactionStatus = 'completed';

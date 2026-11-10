@@ -40,9 +40,12 @@ export const capturePayment = async (paymentId: string, amount: number) => {
   return razorpay.payments.capture(paymentId, amount * 100, 'INR');
 };
 
-export const createRefund = async (paymentId: string, amount?: number) => {
+// `speed: 'optimum'` asks Razorpay for an INSTANT refund (falls back to normal speed automatically when
+// an instant refund is not possible). Without a speed the refund uses the normal 5-7 working day speed.
+export const createRefund = async (paymentId: string, amount?: number, speed?: 'normal' | 'optimum') => {
   return razorpay.payments.refund(paymentId, {
     ...(amount && { amount: Math.round(amount * 100) }),
+    ...(speed && { speed }),
   });
 };
 

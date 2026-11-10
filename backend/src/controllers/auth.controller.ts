@@ -1,24 +1,47 @@
 import { Request, Response } from 'express';
 import crypto from 'crypto';
+import bcrypt from 'bcrypt';
 import { User } from '../models/User';
 import { OTP } from '../models/OTP';
 import { AuthRequest } from '../middlewares/auth.middleware';
-import { generateAuthTokens, verifyRefreshToken, revokeRefreshToken } from '../services/token.service';
-import { sendPasswordResetEmail, sendResetSuccessEmail, sendWelcomeEmail } from '../services/email.service';
+import { JWT_CONFIG } from '../config/jwt';
+import {
+  generateAuthTokens, verifyRefreshToken, revokeRefreshToken, revokeAllUserRefreshTokens,
+} from '../services/token.service';
+import {
+  sendPasswordResetEmail, sendResetSuccessEmail, sendWelcomeEmail, sendSignupOtpEmail,
+} from '../services/email.service';
 
 const generateOTP = () => crypto.randomInt(100000, 1000000).toString();
 
-const setRefreshCookie = (res: Response, token: string) => {
-  res.cookie('refreshToken', token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'strict',
-    maxAge: 7 * 24 * 60 * 60 * 1000,
-  });
+// ---------------------------------------------------------------------------
+// Signup e-mail OTP rules
+// ---------------------------------------------------------------------------
+const OTP_VALIDITY_MS = 5 * 60 * 1000;       // a code is valid for 5 minutes
+const OTP_MAX_SENDS = 3;                      // only 3 codes per round ...
+const OTP_BLOCK_MS = 10 * 60 * 1000;          // ... then the next code can only be requested 10 minutes later
+const OTP_RESEND_COOLDOWN_MS = 60 * 1000;     // minimum gap between two codes
+const OTP_MAX_ATTEMPTS = 5;                   // wrong guesses allowed per code
+const VERIFIED_WINDOW_MS = 15 * 60 * 1000;    // after verifying, the user has 15 minutes to submit the form
+
+const RESET_TOKEN_TTL_MS = 30 * 60 * 1000;    // password-reset links live for 30 minutes
+const RESET_MAX_PER_HOUR = 3;                 // reset e-mails per account per hour
+
+// The OTP is never stored in clear text: only an HMAC of it (keyed with a server secret) is saved.
+const hashOtp = (email: string, otp: string): string =>
+  crypto.createHmac('sha256', JWT_CONFIG.ACCESS_SECRET).update(`email-otp|${email}|${otp}`).digest('hex');
+
+const safeEqual = (a: string, b: string): boolean => {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ab.length === bb.length && crypto.timingSafeEqual(ab, bb);
 };
 
-const setAdminRefreshCookie = (res: Response, token: string) => {
-  res.cookie('adminRefreshToken', token, {
+// Used when the account does not exist so that "unknown user" and "wrong password" take the same time.
+const DUMMY_PASSWORD_HASH = bcrypt.hashSync('machinichi-timing-guard', 12);
+
+const setRefreshCookie = (res: Response, token: string) => {
+  res.cookie('refreshToken', token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'strict',
@@ -30,229 +53,211 @@ const sanitize = (str: string): string => {
   return str.replace(/[<>"']/g, '');
 };
 
-const maskPhone = (num: string): string => {
-  if (!num) return '';
-  if (num.length <= 4) return num;
-  return num.slice(0, 3) + '*'.repeat(num.length - 5) + num.slice(-2);
-};
-
+// Sign-up page: tells the form whether an e-mail / phone number already belongs to an account.
 export const checkUser = async (req: Request, res: Response): Promise<any> => {
   try {
-    const { email, phone } = req.body;
-    const result: any = { emailExists: false, phoneExists: false };
+    const { email, phone } = req.body as { email?: string; phone?: string };
+    const result = { emailExists: false, phoneExists: false };
 
-    if (email) {
-      const existingEmail = await User.findOne({ email: email.toLowerCase().trim() });
-      result.emailExists = !!existingEmail;
-    }
-    if (phone) {
-      const existingPhone = await User.findOne({ phone });
-      result.phoneExists = !!existingPhone;
-    }
+    if (email) result.emailExists = !!(await User.exists({ email }));
+    if (phone) result.phoneExists = !!(await User.exists({ phone }));
 
     return res.status(200).json(result);
-  } catch (err) {
-    return res.status(500).json({ message: 'Check failed', error: err });
+  } catch (err: any) {
+    console.error('[CHECK-USER] failed:', err?.message);
+    return res.status(500).json({ message: 'Check failed' });
   }
 };
 
-export const sendPhoneOTP = async (req: Request, res: Response): Promise<any> => {
+// Sends the signup OTP to the e-mail address the user typed.
+// Rules: neither the e-mail nor the phone may already have an account, a code is valid for 5 minutes,
+// only 3 codes can be requested, the next one only after a 10 minute wait.
+export const sendEmailOTP = async (req: Request, res: Response): Promise<any> => {
   try {
-    const { phone, devMode, email } = req.body;
-    console.log(`[OTP] Send request received for: ${maskPhone(phone)}`);
+    const email: string = req.body.email;
+    const phone: string = req.body.phone;
+    const now = new Date();
 
-    if (email) {
-      const existingEmail = await User.findOne({ email: email.toLowerCase().trim() });
-      if (existingEmail) {
-        console.log(`[OTP] Fail: Email ${email} already registered`);
-        return res.status(409).json({ message: 'Email already registered' });
+    // 1) Neither the e-mail nor the phone number may belong to an existing account.
+    const [emailTaken, phoneTaken] = await Promise.all([
+      User.exists({ email }),
+      User.exists({ phone }),
+    ]);
+    if (emailTaken) return res.status(409).json({ message: 'This email is already registered', field: 'email' });
+    if (phoneTaken) return res.status(409).json({ message: 'This phone number is already registered', field: 'phone' });
+
+    const existing = await OTP.findOne({ identifier: email, type: 'email_verify' });
+
+    // 2) At most 3 codes, then a 10 minute wait.
+    let sendCount = existing?.sendCount || 0;
+    if (existing?.sendBlockedUntil) {
+      if (existing.sendBlockedUntil > now) {
+        const secs = Math.ceil((existing.sendBlockedUntil.getTime() - now.getTime()) / 1000);
+        return res.status(429).json({
+          message: `You have already requested the OTP ${OTP_MAX_SENDS} times. Please try again after ${Math.ceil(secs / 60)} minute(s).`,
+          retryAfterSeconds: secs,
+        });
       }
+      sendCount = 0; // the wait is over: a new round of 3 codes starts
     }
 
-    const existingPhone = await User.findOne({ phone });
-    if (existingPhone) {
-      console.log(`[OTP] Fail: Phone number already registered`);
-      return res.status(409).json({ message: 'Phone number already registered' });
-    }
-
-    console.log(`[OTP] Phone validation: OK`);
-
-    const existingOtp = await OTP.findOne({ identifier: phone, type: 'phone_verify' });
-    if (existingOtp?.lockedUntil && existingOtp.lockedUntil > new Date()) {
-      const remaining = Math.ceil((existingOtp.lockedUntil.getTime() - Date.now()) / 60000);
-      console.log(`[OTP] Fail: OTP verification locked`);
-      return res.status(429).json({ message: `OTP verification locked. Try again in ${remaining} minutes.` });
-    }
-
-    if (existingOtp) {
-      const cooldown = (Date.now() - (existingOtp as any).createdAt.getTime()) / 1000;
-      if (cooldown < 60) {
-        console.log(`[OTP] Fail: Cooldown active`);
-        return res.status(429).json({ message: `Please wait ${Math.ceil(60 - cooldown)} seconds before requesting a new OTP.` });
+    // 3) Small gap between two codes (double clicks, mail flooding).
+    if (existing?.lastSentAt) {
+      const sinceLast = now.getTime() - existing.lastSentAt.getTime();
+      if (sinceLast < OTP_RESEND_COOLDOWN_MS) {
+        const secs = Math.ceil((OTP_RESEND_COOLDOWN_MS - sinceLast) / 1000);
+        return res.status(429).json({
+          message: `Please wait ${secs} seconds before requesting a new OTP.`,
+          retryAfterSeconds: secs,
+        });
       }
     }
 
     const otp = generateOTP();
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+    const newCount = sendCount + 1;
+    const otpExpiresAt = new Date(now.getTime() + OTP_VALIDITY_MS);
+    const sendBlockedUntil = newCount >= OTP_MAX_SENDS ? new Date(now.getTime() + OTP_BLOCK_MS) : undefined;
+    // The record must outlive the 10 minute wait, otherwise the send counter would be lost with it.
+    const keepUntil = new Date(Math.max(otpExpiresAt.getTime(), sendBlockedUntil?.getTime() || 0) + 60 * 1000);
 
-    await OTP.deleteMany({ identifier: phone, type: 'phone_verify' });
-    await OTP.create({
-      identifier: phone,
-      otp,
-      type: 'phone_verify',
-      expiresAt,
-      ipAddress: req.ip,
-      userAgent: req.headers['user-agent'],
-    });
+    const update: any = {
+      $set: {
+        otp: hashOtp(email, otp),
+        otpExpiresAt,
+        expiresAt: keepUntil,
+        attempts: 0,
+        isVerified: false,
+        sendCount: newCount,
+        lastSentAt: now,
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent'],
+      },
+      $unset: { lockedUntil: '' },
+    };
+    if (sendBlockedUntil) update.$set.sendBlockedUntil = sendBlockedUntil;
+    else update.$unset.sendBlockedUntil = '';
 
-    if (devMode === true && process.env.NODE_ENV !== 'production') {
-      console.log(`[DEV] OTP for ${phone}: ${otp}`);
-      console.log(`[OTP] Final result: SENT (dev mode)`);
-      return res.status(200).json({ message: 'OTP sent (dev mode)', otp });
-    }
-
-    const accountSid = process.env.TWILIO_ACCOUNT_SID;
-    const authToken = process.env.TWILIO_AUTH_TOKEN;
-    const smsFrom = process.env.TWILIO_SMS_FROM;
-    const whatsappFrom = process.env.TWILIO_WHATSAPP_FROM;
-
-    if (!accountSid || !authToken) {
-      console.error(`[OTP] Configuration error: Missing TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN`);
-      return res.status(500).json({ message: 'Unable to send OTP. SMS provider credentials not configured.' });
-    }
-
-    console.log(`[OTP] Required configuration: OK`);
-    console.log(`[OTP] SMS provider: Twilio`);
-
-    const from = smsFrom || whatsappFrom;
-    if (!from) {
-      console.error(`[OTP] Configuration error: Neither TWILIO_SMS_FROM nor TWILIO_WHATSAPP_FROM is configured.`);
-      return res.status(500).json({ message: 'Unable to send OTP. Twilio sender number is not configured.' });
-    }
-
-    const isWhatsapp = from.startsWith('whatsapp:');
-    const to = isWhatsapp ? `whatsapp:${phone}` : phone;
-    const body = isWhatsapp
-      ? `Your Machinichi verification code is: *${otp}*\n\nThis OTP expires in 5 minutes. Do not share it with anyone.`
-      : `Your Machinichi verification code is: ${otp}. This OTP expires in 5 minutes.`;
-
-    console.log(`[OTP] Provider request initiated from=${isWhatsapp ? 'whatsapp' : 'sms'}`);
+    await OTP.findOneAndUpdate({ identifier: email, type: 'email_verify' }, update, { upsert: true });
 
     try {
-      const twilio = require('twilio');
-      const client = twilio(accountSid, authToken);
-      const message = await client.messages.create({ from, to, body });
-
-      console.log(`[OTP] Provider HTTP status: 201`);
-      console.log(`[OTP] Provider accepted message: YES`);
-      console.log(`[OTP] Provider message/request ID: ${message.sid}`);
-      console.log(`[OTP] Final result: SENT`);
-
-      return res.status(200).json({
-        message: isWhatsapp
-          ? 'OTP sent to your WhatsApp. Please ensure you have joined the Twilio WhatsApp sandbox if using a trial account.'
-          : 'OTP sent successfully to your phone.'
-      });
-    } catch (twilioErr: any) {
-      console.error(`[OTP] Twilio delivery failed:`, twilioErr);
-      console.log(`[OTP] Final result: FAILED`);
-      return res.status(400).json({
-        message: `Unable to send OTP. ${twilioErr.message || 'Twilio delivery failure.'}`
-      });
+      await sendSignupOtpEmail(email, otp);
+    } catch (mailErr: any) {
+      console.error('[OTP] E-mail delivery failed:', mailErr?.message);
+      // Nothing reached the user: invalidate the unsent code and give the attempt back.
+      const rollback: any = { $set: { sendCount, otpExpiresAt: now }, $unset: { sendBlockedUntil: '' } };
+      if (existing?.lastSentAt) rollback.$set.lastSentAt = existing.lastSentAt;
+      else rollback.$unset.lastSentAt = '';
+      await OTP.updateOne({ identifier: email, type: 'email_verify' }, rollback);
+      return res.status(502).json({ message: 'We could not send the OTP email right now. Please try again in a moment.' });
     }
+
+    return res.status(200).json({
+      message: 'OTP sent to your email address.',
+      expiresInSeconds: OTP_VALIDITY_MS / 1000,
+      resendAfterSeconds: OTP_RESEND_COOLDOWN_MS / 1000,
+      remainingSends: Math.max(0, OTP_MAX_SENDS - newCount),
+    });
   } catch (err: any) {
-    console.error(`[OTP] System error:`, err);
-    return res.status(500).json({ message: 'Failed to send OTP', error: err.message });
+    console.error('[OTP] send failed:', err?.message);
+    return res.status(500).json({ message: 'Failed to send OTP' });
   }
 };
 
-export const verifyPhoneOTP = async (req: Request, res: Response): Promise<any> => {
+export const verifyEmailOTP = async (req: Request, res: Response): Promise<any> => {
   try {
-    const { phone, otp } = req.body;
-    const record = await OTP.findOne({ identifier: phone, type: 'phone_verify' });
+    const email: string = req.body.email;
+    const code: string = req.body.otp;
+    const now = new Date();
 
-    if (!record) return res.status(400).json({ message: 'OTP not found. Request a new one.' });
-
-    if (record.lockedUntil && record.lockedUntil > new Date()) {
-      const remaining = Math.ceil((record.lockedUntil.getTime() - Date.now()) / 60000);
-      return res.status(429).json({ message: `Too many failed attempts. Locked for ${remaining} minutes.` });
+    const record = await OTP.findOne({ identifier: email, type: 'email_verify' });
+    if (!record || !record.otpExpiresAt) {
+      return res.status(400).json({ message: 'OTP not found. Please request a new one.' });
+    }
+    if (record.otpExpiresAt <= now) {
+      return res.status(400).json({ message: 'OTP expired. Please request a new one.' });
     }
 
-    if (record.expiresAt < new Date()) return res.status(400).json({ message: 'OTP expired. Request a new one.' });
-
-    if (record.otp !== otp) {
-      record.attempts += 1;
-      if (record.attempts >= 5) {
-        record.lockedUntil = new Date(Date.now() + 15 * 60 * 1000);
+    if (!safeEqual(record.otp, hashOtp(email, code))) {
+      record.attempts = (record.attempts || 0) + 1;
+      if (record.attempts >= OTP_MAX_ATTEMPTS) {
+        record.otpExpiresAt = now; // burn the code: a new one has to be requested
+        await record.save();
+        return res.status(400).json({ message: 'Too many incorrect attempts. Please request a new OTP.' });
       }
       await record.save();
-      const remaining = 5 - record.attempts;
-      if (remaining <= 0) {
-        return res.status(429).json({ message: 'Too many failed attempts. OTP locked for 15 minutes.' });
-      }
-      return res.status(400).json({ message: `Invalid OTP. ${remaining} attempt(s) remaining.` });
+      return res.status(400).json({ message: `Invalid OTP. ${OTP_MAX_ATTEMPTS - record.attempts} attempt(s) remaining.` });
     }
 
+    // Correct code: it is single use, and the user now has a limited time to submit the form.
     record.isVerified = true;
-    record.expiresAt = new Date(Date.now() + 10 * 60 * 1000); // verified status valid for 10 minutes
+    record.attempts = 0;
+    record.otpExpiresAt = now;
+    const verifiedUntil = new Date(now.getTime() + VERIFIED_WINDOW_MS);
+    if (!record.expiresAt || record.expiresAt < verifiedUntil) record.expiresAt = verifiedUntil;
     await record.save();
 
-    return res.status(200).json({ message: 'Phone verified successfully', verified: true });
-  } catch (err) {
-    return res.status(500).json({ message: 'OTP verification failed', error: err });
+    return res.status(200).json({ message: 'Email verified successfully', verified: true });
+  } catch (err: any) {
+    console.error('[OTP] verify failed:', err?.message);
+    return res.status(500).json({ message: 'OTP verification failed' });
   }
 };
 
 export const register = async (req: Request, res: Response): Promise<any> => {
   try {
-    console.log(`[REGISTER] Registration started`);
     const { fullName, email, phone, password, countryCode } = req.body;
 
     const cleanName = sanitize(fullName.trim());
     const cleanEmail = email.toLowerCase().trim();
     const fullPhone = `${countryCode || '+91'}${phone}`;
+    const now = new Date();
 
-    // Verify phone verification OTP record exists and is verified
+    // The e-mail must have been verified with the OTP that was sent to it (and recently).
     const verifiedRecord = await OTP.findOne({
-      identifier: fullPhone,
-      type: 'phone_verify',
+      identifier: cleanEmail,
+      type: 'email_verify',
       isVerified: true,
+      expiresAt: { $gt: now },
     });
 
     if (!verifiedRecord) {
-      console.log(`[REGISTER] Fail: Phone number ${maskPhone(fullPhone)} was not verified via OTP`);
-      return res.status(400).json({ message: 'Phone number has not been verified. Please verify using OTP.' });
+      return res.status(400).json({ message: 'Email has not been verified. Please verify the OTP sent to your email.' });
     }
 
-    const existingEmail = await User.findOne({ email: cleanEmail });
-    if (existingEmail) return res.status(409).json({ message: 'Email already registered' });
+    const [emailTaken, phoneTaken] = await Promise.all([
+      User.exists({ email: cleanEmail }),
+      User.exists({ phone: fullPhone }),
+    ]);
+    if (emailTaken) return res.status(409).json({ message: 'This email is already registered' });
+    if (phoneTaken) return res.status(409).json({ message: 'This phone number is already registered' });
 
-    const existingPhone = await User.findOne({ phone: fullPhone });
-    if (existingPhone) return res.status(409).json({ message: 'Phone already registered' });
+    let user;
+    try {
+      user = await User.create({
+        fullName: cleanName,
+        email: cleanEmail,
+        phone: fullPhone,
+        password,
+        provider: 'local',
+        isEmailVerified: true,
+        isPhoneVerified: false,
+        role: 'customer',
+      });
+    } catch (createErr: any) {
+      if (createErr?.code === 11000) {
+        return res.status(409).json({ message: 'An account with these details already exists' });
+      }
+      throw createErr;
+    }
 
-    const user = await User.create({
-      fullName: cleanName,
-      email: cleanEmail,
-      phone: fullPhone,
-      password,
-      provider: 'local',
-      isPhoneVerified: true,
-      role: 'customer',
-    });
-
-    // Delete verified record so it cannot be reused
+    // The verification record is single use.
     await OTP.deleteOne({ _id: verifiedRecord._id });
-
-    console.log(`[REGISTER] User created successfully`);
-    console.log(`[EMAIL] Welcome email triggered`);
 
     let emailSent = true;
     try {
       await sendWelcomeEmail(cleanEmail, cleanName);
     } catch (emailErr: any) {
-      console.error(`[EMAIL] WELCOME EMAIL FAILED`);
-      console.error(`[EMAIL] Error Code: ${emailErr.code || 'UNKNOWN'}`);
-      console.error(`[EMAIL] Reason: ${emailErr.message}`);
+      console.error(`[EMAIL] Welcome email failed: ${emailErr?.message}`);
       emailSent = false;
     }
 
@@ -263,43 +268,56 @@ export const register = async (req: Request, res: Response): Promise<any> => {
       user: { id: user._id, fullName: user.fullName, email: user.email, phone: user.phone, role: user.role },
     });
   } catch (err: any) {
-    console.error("Registration Error:", err);
-    return res.status(500).json({ message: 'Registration failed', error: err.message });
+    console.error('Registration Error:', err?.message);
+    return res.status(500).json({ message: 'Registration failed' });
   }
 };
 
 export const login = async (req: Request, res: Response): Promise<any> => {
   try {
-    const { identifier, password } = req.body;
+    const identifier: string = req.body.identifier;
+    const password: string = req.body.password;
+    const invalidCredentials = { message: 'Invalid credentials' };
 
-    const isEmail = identifier.includes('@');
-    const query = isEmail
-      ? { email: identifier.toLowerCase().trim() }
-      : { phone: { $regex: identifier.trim() + '$' } };
+    // Build the lookup from validated shapes only. (The old code put the raw input into a regex,
+    // which let an attacker match other people's phone numbers.)
+    let query: Record<string, any> | null = null;
+    if (identifier.includes('@')) {
+      query = { email: identifier.toLowerCase() };
+    } else {
+      const compact = identifier.replace(/[\s-]/g, '');
+      if (/^\+\d{8,15}$/.test(compact)) query = { phone: compact };
+      else if (/^\d{10}$/.test(compact)) query = { phone: { $regex: `${compact}$` } }; // digits only: safe
+    }
 
-    const user = await User.findOne({ ...query, provider: 'local' }).select('+password');
+    const user = query ? await User.findOne({ ...query, provider: 'local' }).select('+password') : null;
 
-    if (!user) return res.status(401).json({ message: 'Invalid credentials' });
+    if (!user) {
+      // Same amount of work as a real check, so response time does not reveal which accounts exist.
+      await bcrypt.compare(password, DUMMY_PASSWORD_HASH);
+      return res.status(401).json(invalidCredentials);
+    }
 
-    if (user.isLocked)
-      return res.status(403).json({ message: 'Account locked due to too many attempts. Try again in 15 minutes.' });
-
-    if (user.isBlocked)
-      return res.status(403).json({ message: 'Account is blocked. Contact support.' });
+    if (user.isLocked) {
+      return res.status(429).json({ message: 'Too many failed attempts. Please try again later.' });
+    }
 
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
-      user.failedLoginAttempts += 1;
-      if (user.failedLoginAttempts >= 5) {
-        user.lockUntil = new Date(Date.now() + 15 * 60 * 1000);
+      const updated = await User.findByIdAndUpdate(
+        user._id,
+        { $inc: { failedLoginAttempts: 1 } },
+        { new: true },
+      ).select('failedLoginAttempts');
+      if (updated && updated.failedLoginAttempts >= 5) {
+        await User.updateOne({ _id: user._id }, { $set: { lockUntil: new Date(Date.now() + 15 * 60 * 1000) } });
       }
-      await user.save();
-      const remaining = 5 - user.failedLoginAttempts;
-      return res.status(401).json({
-        message: remaining > 0
-          ? `Invalid credentials. ${remaining} attempt(s) remaining.`
-          : 'Account locked for 15 minutes.',
-      });
+      return res.status(401).json(invalidCredentials);
+    }
+
+    // Only reveal the account state to someone who knows the password.
+    if (user.isBlocked || user.isDeleted || user.isActive === false) {
+      return res.status(403).json({ message: 'Account is blocked. Contact support.' });
     }
 
     user.failedLoginAttempts = 0;
@@ -320,32 +338,27 @@ export const login = async (req: Request, res: Response): Promise<any> => {
       user: { id: user._id, fullName: user.fullName, email: user.email, phone: user.phone, role: user.role },
     });
   } catch (err: any) {
-    return res.status(500).json({ message: 'Login failed', error: err.message });
+    console.error('Login error:', err?.message);
+    return res.status(500).json({ message: 'Login failed' });
   }
 };
 
 export const forgotPassword = async (req: Request, res: Response): Promise<any> => {
+  // The answer is always the same, whether or not the account exists (no account enumeration).
+  const genericReply = { message: 'If an account exists for that email, a password reset link has been sent.' };
+
   try {
-    const { email } = req.body;
-    const cleanEmail = email.toLowerCase().trim();
+    const cleanEmail: string = req.body.email;
 
     const user = await User.findOne({ email: cleanEmail, provider: 'local' });
-    if (!user) return res.status(200).json({ message: 'If that email exists, a reset link has been sent.' });
+    if (!user) return res.status(200).json(genericReply);
 
-    if (user.passwordResetLockUntil && user.passwordResetLockUntil > new Date()) {
-      const remaining = Math.ceil((user.passwordResetLockUntil.getTime() - Date.now()) / 60000);
-      return res.status(429).json({
-        message: `Too many reset requests. Try again in ${remaining} minutes.`,
-      });
-    }
-
-    const recentRequests = user.passwordResetAttempts || 0;
-    if (recentRequests >= 3) {
-      user.passwordResetLockUntil = new Date(Date.now() + 15 * 60 * 1000);
-      user.passwordResetAttempts = 0;
-      await user.save();
-      return res.status(429).json({ message: 'Too many reset requests. Try again in 15 minutes.' });
-    }
+    // Max 3 reset e-mails per account per hour (extra requests are silently ignored).
+    const now = Date.now();
+    const lastIssuedAt = user.passwordResetExpires ? user.passwordResetExpires.getTime() - RESET_TOKEN_TTL_MS : 0;
+    const withinWindow = lastIssuedAt > 0 && now - lastIssuedAt < 60 * 60 * 1000;
+    const recentRequests = withinWindow ? (user.passwordResetAttempts || 0) : 0;
+    if (recentRequests >= RESET_MAX_PER_HOUR) return res.status(200).json(genericReply);
 
     const token = crypto.randomBytes(32).toString('hex');
     const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
@@ -355,8 +368,8 @@ export const forgotPassword = async (req: Request, res: Response): Promise<any> 
       {
         $set: {
           passwordResetToken: hashedToken,
-          passwordResetExpires: new Date(Date.now() + 30 * 60 * 1000),
-          passwordResetAttempts: (recentRequests || 0) + 1,
+          passwordResetExpires: new Date(now + RESET_TOKEN_TTL_MS),
+          passwordResetAttempts: recentRequests + 1,
         },
       }
     );
@@ -364,16 +377,16 @@ export const forgotPassword = async (req: Request, res: Response): Promise<any> 
     const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:5173';
     const resetLink = `${CLIENT_URL}/reset-password?token=${token}`;
 
-    try {
-      await sendPasswordResetEmail(cleanEmail, resetLink, user.fullName);
-    } catch (emailErr: any) {
-      console.error('Failed to send reset email:', emailErr.message);
-    }
+    res.status(200).json(genericReply);
 
-    return res.status(200).json({ message: 'If that email exists, a reset link has been sent.' });
+    // Sent AFTER answering so the response time cannot reveal whether the account exists.
+    sendPasswordResetEmail(cleanEmail, resetLink, user.fullName).catch((emailErr: any) => {
+      console.error('Failed to send reset email:', emailErr?.message);
+    });
+    return;
   } catch (err: any) {
-    console.error('Forgot password error:', err);
-    return res.status(500).json({ message: 'Failed to process request' });
+    console.error('Forgot password error:', err?.message);
+    return res.status(200).json(genericReply);
   }
 };
 
@@ -388,7 +401,13 @@ export const resetPassword = async (req: Request, res: Response): Promise<any> =
       passwordResetExpires: { $gt: new Date() },
     }).select('+password');
 
-    if (!user) return res.status(400).json({ message: 'Token is invalid or has expired' });
+    if (!user) {
+      return res.status(400).json({ message: 'This reset link is invalid or has expired. Please request a new one.' });
+    }
+
+    if (await user.comparePassword(password)) {
+      return res.status(400).json({ message: 'Your new password must be different from your current password.' });
+    }
 
     user.password = password;
     user.passwordResetToken = undefined as any;
@@ -399,15 +418,17 @@ export const resetPassword = async (req: Request, res: Response): Promise<any> =
     user.lockUntil = undefined as any;
     await user.save();
 
-    try {
-      await sendResetSuccessEmail(user.email!, user.fullName);
-    } catch (emailErr) {
-      console.error('Failed to send reset success email:', emailErr);
-    }
+    // Whoever knew the old password (or stole a session) is signed out everywhere.
+    await revokeAllUserRefreshTokens(user._id as any);
+
+    sendResetSuccessEmail(user.email!, user.fullName).catch((emailErr: any) => {
+      console.error('Failed to send reset success email:', emailErr?.message);
+    });
 
     return res.status(200).json({ message: 'Password reset successfully. You can now log in.' });
   } catch (err: any) {
-    return res.status(500).json({ message: 'Password reset failed', error: err.message });
+    console.error('Reset password error:', err?.message);
+    return res.status(500).json({ message: 'Password reset failed' });
   }
 };
 

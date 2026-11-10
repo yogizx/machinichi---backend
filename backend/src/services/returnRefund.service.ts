@@ -5,10 +5,8 @@
  * unit-tested in isolation from the database and the payment gateway.
  */
 
-/** Statuses from which an admin may issue a refund (i.e. post-approval). */
+/** Statuses from which a refund may be issued, i.e. only once the product has been collected. */
 export const REFUNDABLE_STATUSES = [
-  'approved',
-  'pickup_scheduled',
   'item_received',
   'inspection_completed',
   'on_hold',

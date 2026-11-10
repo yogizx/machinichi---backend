@@ -781,7 +781,7 @@ function OffersCoupons({ onAdminLogout }) {
                           <button
                             aria-label={`Edit ${campaign.name}`}
                             className="grid h-8 w-8 place-items-center rounded-[7px] text-[#7a6b62] transition duration-300 hover:-translate-y-0.5 hover:bg-[#f2e8df] hover:text-[#2a170d] active:translate-y-0 active:scale-[0.98]"
-                            onClick={() => toggleCampaignStatus(campaign)}
+                            onClick={() => navigate(`/admin/create-offers?edit=${campaign._id}`)}
                             type="button"
                           >
                             <Edit3 size={15} />

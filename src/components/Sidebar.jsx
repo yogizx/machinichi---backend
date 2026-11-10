@@ -1,6 +1,5 @@
 import {
   ClipboardList,
-  Clock3,
   Headphones,
   MapPinned,
   RotateCcw,
@@ -10,7 +9,6 @@ import { NavLink, useLocation } from "react-router-dom";
 
 const menuItems = [
   { label: "Profile", icon: UserRound, to: "/profile" },
-  { label: "Overview", icon: Clock3, to: "/overview" },
   { label: "Orders", icon: ClipboardList, to: "/orders" },
   { label: "Track Orders", icon: MapPinned, to: "/trackorder" },
   { label: "Return Request", icon: RotateCcw, to: "/return-request" },

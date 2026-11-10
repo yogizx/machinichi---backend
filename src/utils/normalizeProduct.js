@@ -69,6 +69,13 @@ export function normalizeProduct(p) {
   const description = p.description || "";
 
   const stockStatus = p.quantity != null ? (p.quantity > 0 ? "In Stock" : "Out of Stock") : null;
+  // Available = Current stock - Reserved (same formula as /admin/inventory). null when stock is unknown.
+  const availableStock =
+    p.availableStock != null
+      ? Math.max(0, Number(p.availableStock) || 0)
+      : p.quantity != null
+        ? Math.max(0, (Number(p.quantity) || 0) - (Number(p.reservedQuantity) || 0))
+        : null;
   const brand = p.brand || "";
 
   return {
@@ -91,6 +98,7 @@ export function normalizeProduct(p) {
     discountPercent,
     description,
     stock: stockStatus,
+    availableStock,
     selectedSize: sizes[0],
   };
 }

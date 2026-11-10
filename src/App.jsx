@@ -44,7 +44,6 @@ const GoogleCallback = lazy(() => import("./pages/GoogleCallback"));
 const Home = lazy(() => import("./pages/Home"));
 const Industries = lazy(() => import("./pages/Industries/Industries"));
 const Order = lazy(() => import("./pages/Order"));
-const Overview = lazy(() => import("./pages/Overview"));
 const Partnership = lazy(() => import("./pages/Partnership"));
 const PaymentMethod = lazy(() => import("./pages/PaymentMethod"));
 const PaymentFailure = lazy(() => import("./pages/PaymentFailure"));
@@ -580,7 +579,7 @@ function AppLayout() {
 
               <Route path="/account" element={<RequireAuth isSignedIn={isSignedIn} authLoading={authLoading}><Profile onSignOut={completeSignOut} /></RequireAuth>} />
               <Route path="/profile" element={<RequireAuth isSignedIn={isSignedIn} authLoading={authLoading}><Profile onSignOut={completeSignOut} /></RequireAuth>} />
-              <Route path="/overview" element={<RequireAuth isSignedIn={isSignedIn} authLoading={authLoading}><Overview /></RequireAuth>} />
+              <Route path="/overview" element={<Navigate to="/profile" replace />} />
               <Route path="/orders" element={<RequireAuth isSignedIn={isSignedIn} authLoading={authLoading}><Order /></RequireAuth>} />
               <Route path="/trackorder" element={<RequireAuth isSignedIn={isSignedIn} authLoading={authLoading}><Trackorder /></RequireAuth>} />
               <Route path="/return-request" element={<RequireAuth isSignedIn={isSignedIn} authLoading={authLoading}><Return /></RequireAuth>} />

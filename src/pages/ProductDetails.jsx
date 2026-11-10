@@ -46,6 +46,7 @@ const thumb4 =
 
 
 const defaultSavedAddresses = [];
+const LOW_STOCK_LIMIT = 5;
 
 const SIZE_LIKE_NAME = /^\s*[0-9]*\s*(g|kg|grams?|kgs?|ml|milli[\s-]?liters?|l|lit[ea]rs?|cm|inch|in|pack|pcs|pieces?|units?|nos)\b\s*$/i;
 
@@ -580,6 +581,16 @@ function ProductDetails({
   const activeBarcode = activeSelectedOption?.variantObj?.barcode || selected.barcode || "";
   const activeDescription = activeSelectedOption?.variantObj?.description || product.productDescriptionDetailed || product.description || "No description available for this product.";
 
+  // Stock status. Available = Current stock - Reserved (same formula as /admin/inventory). null when stock is unknown.
+  const availableStock =
+    selected.availableStock != null
+      ? Math.max(0, Number(selected.availableStock) || 0)
+      : selected.quantity != null
+        ? Math.max(0, (Number(selected.quantity) || 0) - (Number(selected.reservedQuantity) || 0))
+        : null;
+  const isOutOfStock = availableStock != null && availableStock <= 0;
+  const isLowStock = availableStock != null && availableStock > 0 && availableStock <= LOW_STOCK_LIMIT;
+
   const handleAddToCartClick = () => {
     const itemToCart = {
       ...product,
@@ -791,6 +802,15 @@ function ProductDetails({
               )}
             </div>
 
+            {/* Stock status */}
+            {isOutOfStock ? (
+              <p className="mt-3 text-base font-extrabold text-[#e53935]">Out of Stock</p>
+            ) : isLowStock ? (
+              <p className="mt-3 text-base font-extrabold text-[#f96e15]">
+                Only {availableStock} {availableStock === 1 ? "product" : "products"} left
+              </p>
+            ) : null}
+
             {/* Dynamic Variant Selector Cards (Material / Color / Size / Unit) */}
             {configuredVariantGroups.length > 0 && (
               <div className="mt-7 space-y-6">
@@ -878,7 +898,10 @@ function ProductDetails({
               <button
                 type="button"
                 onClick={handleBuyNow}
-                className="flex items-center justify-center gap-2 rounded-xl bg-[#f96e15] py-4 text-base font-extrabold tracking-wide text-white shadow-md transition hover:bg-[#e05d09]"
+                disabled={isOutOfStock}
+                className={`flex items-center justify-center gap-2 rounded-xl bg-[#f96e15] py-4 text-base font-extrabold tracking-wide text-white shadow-md transition ${
+                  isOutOfStock ? "cursor-not-allowed opacity-50" : "hover:bg-[#e05d09]"
+                }`}
               >
                 <Zap size={18} fill="currentColor" /> BUY NOW
               </button>

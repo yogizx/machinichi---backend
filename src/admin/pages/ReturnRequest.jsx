@@ -73,7 +73,7 @@ function StatusBadge({ status }) {
   );
 }
 
-// Direct refund action — available once the admin has approved the return.
+// Direct refund action — available once the product has been collected (automatic refund retry / manual settlement).
 const REFUND_ACTION = {
   key: "refund-now",
   label: "Refund Amount",
@@ -102,14 +102,12 @@ function actionsFor(status) {
       ];
     case "approved":
       return [
-        REFUND_ACTION,
         { key: "pickup", label: "Schedule Pickup", cls: "bg-blue-600 hover:bg-blue-700 text-white", endpoint: (id) => `/returns/${id}/schedule-pickup`, fields: [{ name: "courier", label: "Courier", type: "text", required: false }, { name: "trackingNumber", label: "Tracking / AWB number", type: "text", required: false }, { name: "pickupDate", label: "Pickup date", type: "date", required: false }, { name: "pickupMode", label: "Mode (pickup / dropoff)", type: "text", required: false }, { name: "instructions", label: "Instructions for customer", type: "text", required: false }] },
-        { key: "receipt", label: "Record Receipt", cls: "bg-[#3a1100] hover:bg-[#fd761a] text-white", endpoint: (id) => `/returns/${id}/confirm-receipt`, fields: [{ name: "notes", label: "Receipt notes", type: "text", required: false }] },
+        { key: "receipt", label: "Product Collected", cls: "bg-[#3a1100] hover:bg-[#fd761a] text-white", endpoint: (id) => `/returns/${id}/confirm-receipt`, fields: [{ name: "notes", label: "Receipt notes", type: "text", required: false }] },
       ];
     case "pickup_scheduled":
       return [
-        REFUND_ACTION,
-        { key: "receipt", label: "Confirm Item Received", cls: "bg-[#3a1100] hover:bg-[#fd761a] text-white", endpoint: (id) => `/returns/${id}/confirm-receipt`, fields: [{ name: "notes", label: "Receipt notes", type: "text", required: false }] },
+        { key: "receipt", label: "Product Collected", cls: "bg-[#3a1100] hover:bg-[#fd761a] text-white", endpoint: (id) => `/returns/${id}/confirm-receipt`, fields: [{ name: "notes", label: "Receipt notes", type: "text", required: false }] },
         { key: "pickupFailed", label: "Mark Pickup Failed", cls: "bg-orange-600 hover:bg-orange-700 text-white", endpoint: (id) => `/returns/${id}/pickup-failed`, fields: [{ name: "reason", label: "Failure reason", type: "text", required: true }, { name: "rescheduleDate", label: "Reschedule date (optional)", type: "date", required: false }] },
       ];
     case "pickup_failed":

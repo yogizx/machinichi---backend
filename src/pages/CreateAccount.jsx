@@ -1,8 +1,9 @@
-import { useState, useRef, useEffect, useMemo } from "react";
-import { Eye, EyeOff, Phone, Mail, ArrowRight, ChevronDown, ShieldCheck, CheckCircle2, Loader2 } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
+import { Eye, EyeOff, Mail, ArrowRight, ChevronDown, ShieldCheck, CheckCircle2, Loader2 } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import machinichiImage from "./images/machinichi.png";
 import GoogleSignInButton from "../components/GoogleSignInButton";
+import PasswordStrengthMeter from "../components/PasswordStrengthMeter";
 import api from "../services/api";
 
 const COUNTRIES = [
@@ -18,26 +19,10 @@ const COUNTRIES = [
 
 const flagUrl = (code) => `https://flagcdn.com/w40/${code.toLowerCase()}.png`;
 
-const passwordRules = [
-  { label: "8+ characters", test: (v) => v.length >= 8 },
-  { label: "Uppercase letter", test: (v) => /[A-Z]/.test(v) },
-  { label: "Lowercase letter", test: (v) => /[a-z]/.test(v) },
-  { label: "Number", test: (v) => /\d/.test(v) },
-  { label: "Special character", test: (v) => /[^A-Za-z0-9\s]/.test(v) },
-];
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+const EMPTY_OTP = ["", "", "", "", "", ""];
 
-const getStrength = (pwd) => {
-  if (!pwd) return { label: "", pct: 0, color: "", textColor: "" };
-  let score = 0;
-  if (pwd.length >= 8) score++;
-  if (/[a-z]/.test(pwd) && /[A-Z]/.test(pwd)) score++;
-  if (/\d/.test(pwd)) score++;
-  if (/[^A-Za-z0-9\s]/.test(pwd)) score++;
-  if (score <= 1) return { label: "Weak", pct: 25, color: "bg-red-500", textColor: "text-red-600" };
-  if (score <= 2) return { label: "Fair", pct: 50, color: "bg-orange-500", textColor: "text-orange-600" };
-  if (score <= 3) return { label: "Medium", pct: 75, color: "bg-yellow-500", textColor: "text-yellow-700" };
-  return { label: "Strong", pct: 100, color: "bg-green-500", textColor: "text-green-600" };
-};
+const formatClock = (secs) => `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
 
 export default function CreateAccount({ onSignIn }) {
   const navigate = useNavigate();
@@ -51,14 +36,16 @@ export default function CreateAccount({ onSignIn }) {
   const [showPwd, setShowPwd] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
 
+  // E-mail OTP
   const [otpSent, setOtpSent] = useState(false);
-  const [otp, setOtp] = useState(["", "", "", "", "", ""]);
-  const [phoneVerified, setPhoneVerified] = useState(false);
-  const [otpTimer, setOtpTimer] = useState(0);
+  const [otp, setOtp] = useState(EMPTY_OTP);
+  const [emailVerified, setEmailVerified] = useState(false);
+  const [resendTimer, setResendTimer] = useState(0); // seconds until another OTP may be requested
+  const [otpExpiry, setOtpExpiry] = useState(0); // seconds the current OTP is still valid (5 minutes)
   const [otpError, setOtpError] = useState("");
+  const [otpInfo, setOtpInfo] = useState("");
   const otpRefs = useRef([]);
 
-  const [devMode, setDevMode] = useState(false);
   const [termsAccepted, setTermsAccepted] = useState(false);
   const [loading, setLoading] = useState(false);
   const [otpLoading, setOtpLoading] = useState(false);
@@ -66,52 +53,78 @@ export default function CreateAccount({ onSignIn }) {
   const [submitError, setSubmitError] = useState("");
   const [success, setSuccess] = useState("");
 
+  // "Is this e-mail / phone already registered?" - checked against the database while typing.
   const [emailExists, setEmailExists] = useState(false);
   const [phoneExists, setPhoneExists] = useState(false);
+  const [emailAvailable, setEmailAvailable] = useState(false); // checked and NOT registered before
+  const [phoneAvailable, setPhoneAvailable] = useState(false);
   const [checkingEmail, setCheckingEmail] = useState(false);
   const [checkingPhone, setCheckingPhone] = useState(false);
   const emailCheckRef = useRef(null);
   const phoneCheckRef = useRef(null);
+  const latestEmailRef = useRef("");
+  const latestPhoneRef = useRef("");
 
-  const strength = useMemo(() => getStrength(form.password), [form.password]);
-
+  const timersRunning = resendTimer > 0 || otpExpiry > 0;
   useEffect(() => {
-    if (otpTimer <= 0) return;
-    const t = setInterval(() => setOtpTimer((s) => s - 1), 1000);
+    if (!timersRunning) return undefined;
+    const t = setInterval(() => {
+      setResendTimer((s) => (s > 0 ? s - 1 : 0));
+      setOtpExpiry((s) => (s > 0 ? s - 1 : 0));
+    }, 1000);
     return () => clearInterval(t);
-  }, [otpTimer]);
+  }, [timersRunning]);
 
   const setField = (k, v) => {
     setForm((p) => ({ ...p, [k]: v }));
     setErrors((p) => ({ ...p, [k]: "" }));
   };
 
-  const checkEmailUniqueness = (email) => {
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return;
-    if (emailCheckRef.current) clearTimeout(emailCheckRef.current);
-    emailCheckRef.current = setTimeout(async () => {
-      setCheckingEmail(true);
-      try {
-        const { data } = await api.post("/auth/check-user", { email: email.trim().toLowerCase() });
-        setEmailExists(data.emailExists);
-        if (data.emailExists) setErrors((p) => ({ ...p, email: "This email is already registered" }));
-      } catch { /* ignore */ }
-      setCheckingEmail(false);
-    }, 600);
+  const resetOtpFlow = () => {
+    setOtpSent(false);
+    setOtp(EMPTY_OTP);
+    setOtpError("");
+    setOtpInfo("");
+    setResendTimer(0);
+    setOtpExpiry(0);
   };
 
-  const checkPhoneUniqueness = (phone) => {
-    if (!phone || phone.length < 10) return;
-    if (phoneCheckRef.current) clearTimeout(phoneCheckRef.current);
-    phoneCheckRef.current = setTimeout(async () => {
-      setCheckingPhone(true);
+  const checkEmailUniqueness = (rawEmail) => {
+    const email = rawEmail.trim().toLowerCase();
+    latestEmailRef.current = email;
+    if (emailCheckRef.current) clearTimeout(emailCheckRef.current);
+    setEmailAvailable(false);
+    if (!EMAIL_RE.test(email)) { setCheckingEmail(false); return; }
+    setCheckingEmail(true);
+    emailCheckRef.current = setTimeout(async () => {
       try {
-        const { data } = await api.post("/auth/check-user", { phone: `${country.dial}${phone}` });
-        setPhoneExists(data.phoneExists);
+        const { data } = await api.post("/auth/check-user", { email });
+        if (latestEmailRef.current !== email) return; // the user kept typing: ignore this answer
+        setEmailExists(!!data.emailExists);
+        setEmailAvailable(!data.emailExists);
+        if (data.emailExists) setErrors((p) => ({ ...p, email: "This email is already registered" }));
+      } catch { /* the server checks again when the account is created */ }
+      if (latestEmailRef.current === email) setCheckingEmail(false);
+    }, 500);
+  };
+
+  const checkPhoneUniqueness = (digits, dial) => {
+    const phone = `${dial}${digits}`;
+    latestPhoneRef.current = phone;
+    if (phoneCheckRef.current) clearTimeout(phoneCheckRef.current);
+    setPhoneAvailable(false);
+    if (!/^\d{10}$/.test(digits)) { setCheckingPhone(false); return; }
+    setCheckingPhone(true);
+    phoneCheckRef.current = setTimeout(async () => {
+      try {
+        const { data } = await api.post("/auth/check-user", { phone });
+        if (latestPhoneRef.current !== phone) return;
+        setPhoneExists(!!data.phoneExists);
+        setPhoneAvailable(!data.phoneExists);
         if (data.phoneExists) setErrors((p) => ({ ...p, phone: "This phone number is already registered" }));
-      } catch { /* ignore */ }
-      setCheckingPhone(false);
-    }, 600);
+      } catch { /* the server checks again when the account is created */ }
+      if (latestPhoneRef.current === phone) setCheckingPhone(false);
+    }, 500);
   };
 
   const validate = () => {
@@ -123,16 +136,16 @@ export default function CreateAccount({ onSignIn }) {
 
     const email = form.email.trim().toLowerCase();
     if (!email) e.email = "Email is required";
-    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) e.email = "Please enter a valid email address.";
+    else if (!EMAIL_RE.test(email)) e.email = "Please enter a valid email address.";
     else if (emailExists) e.email = "This email is already registered";
+    else if (!emailVerified) e.email = "Please verify your email with the OTP first";
 
     if (!form.phone || !/^\d{10}$/.test(form.phone)) e.phone = "Enter a valid 10-digit phone number";
     else if (phoneExists) e.phone = "This phone number is already registered";
-    else if (!phoneVerified) e.phone = "Please verify your phone number first";
 
     if (!form.password || form.password.length < 8) e.password = "Password must be at least 8 characters";
-    else if (!/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9\s])/.test(form.password))
-      e.password = "Must include uppercase, lowercase, number & special character";
+    else if (!/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9\s])\S{8,128}$/.test(form.password))
+      e.password = "Must include uppercase, lowercase, number & special character (no spaces)";
 
     if (form.password !== form.confirmPassword) e.confirmPassword = "Passwords do not match";
 
@@ -140,29 +153,40 @@ export default function CreateAccount({ onSignIn }) {
     return Object.keys(e).length === 0;
   };
 
+  const emailValue = form.email.trim().toLowerCase();
+  const emailValid = EMAIL_RE.test(emailValue);
+  const phoneValid = /^\d{10}$/.test(form.phone);
+  const phoneReady = phoneValid && phoneAvailable && !phoneExists && !checkingPhone;
+  const emailReady = emailValid && emailAvailable && !emailExists && !checkingEmail;
+  const canSendOtp = emailReady && phoneReady && !emailVerified;
+
   const sendOTP = async () => {
-    if (!form.phone || !/^\d{7,}$/.test(form.phone)) {
-      setErrors((p) => ({ ...p, phone: "Enter a valid phone number first" }));
-      return;
-    }
+    if (!emailValid) { setErrors((p) => ({ ...p, email: "Enter a valid email address first" })); return; }
+    if (!phoneValid) { setErrors((p) => ({ ...p, phone: "Enter your 10-digit phone number first" })); return; }
+    if (emailExists || phoneExists) return;
+
     setOtpLoading(true);
     setOtpError("");
+    setOtpInfo("");
     try {
-      const payload = { phone: `${country.dial}${form.phone}`, devMode };
-      const emailVal = form.email.trim().toLowerCase();
-      if (emailVal) payload.email = emailVal;
-      const res = await api.post("/auth/send-otp", payload);
-      if (import.meta.env.DEV && res.data.otp) {
-        const digits = res.data.otp.toString().split("");
-        setOtp(digits);
-      }
+      const { data } = await api.post("/auth/send-otp", { email: emailValue, phone: `${country.dial}${form.phone}` });
+      setOtp(EMPTY_OTP);
       setOtpSent(true);
-      setOtpTimer(60);
+      setResendTimer(data.resendAfterSeconds ?? 60);
+      setOtpExpiry(data.expiresInSeconds ?? 300);
+      setOtpInfo(
+        data.remainingSends === 0
+          ? "OTP sent. This was your last OTP for now - you can request another one after 10 minutes."
+          : `OTP sent to ${emailValue}. Please check your inbox (and spam folder).`
+      );
+      setTimeout(() => otpRefs.current[0]?.focus(), 50);
     } catch (err) {
-      const msg = err.response?.data?.message || "Failed to send OTP";
+      const data = err.response?.data;
+      const msg = data?.message || "Failed to send OTP. Please try again.";
       setOtpError(msg);
-      setErrors((p) => ({ ...p, phone: msg }));
-      if (msg.toLowerCase().includes("email")) setErrors((p) => ({ ...p, email: msg }));
+      if (data?.field === "email") { setEmailExists(true); setEmailAvailable(false); setErrors((p) => ({ ...p, email: msg })); }
+      if (data?.field === "phone") { setPhoneExists(true); setPhoneAvailable(false); setErrors((p) => ({ ...p, phone: msg })); }
+      if (err.response?.status === 429 && data?.retryAfterSeconds) setResendTimer(data.retryAfterSeconds);
     }
     setOtpLoading(false);
   };
@@ -173,8 +197,10 @@ export default function CreateAccount({ onSignIn }) {
     setVerifyLoading(true);
     setOtpError("");
     try {
-      await api.post("/auth/verify-otp", { phone: `${country.dial}${form.phone}`, otp: code });
-      setPhoneVerified(true);
+      await api.post("/auth/verify-otp", { email: emailValue, otp: code });
+      setEmailVerified(true);
+      setErrors((p) => ({ ...p, email: "" }));
+      resetOtpFlow();
     } catch (err) {
       setOtpError(err.response?.data?.message || "Invalid OTP");
     }
@@ -191,6 +217,15 @@ export default function CreateAccount({ onSignIn }) {
   const handleOtpKey = (i, e) => {
     if (e.key === "Backspace" && !otp[i] && i > 0) otpRefs.current[i - 1]?.focus();
   };
+  const handleOtpPaste = (e) => {
+    const digits = e.clipboardData.getData("text").replace(/\D/g, "").slice(0, 6);
+    if (!digits) return;
+    e.preventDefault();
+    const next = [...EMPTY_OTP];
+    digits.split("").forEach((d, idx) => { next[idx] = d; });
+    setOtp(next);
+    otpRefs.current[Math.min(digits.length, 5)]?.focus();
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -200,7 +235,7 @@ export default function CreateAccount({ onSignIn }) {
     try {
       const res = await api.post("/auth/register", {
         fullName: form.fullName.trim().replace(/\s+/g, " "),
-        email: form.email.trim().toLowerCase(),
+        email: emailValue,
         phone: form.phone,
         countryCode: country.dial,
         password: form.password,
@@ -213,7 +248,8 @@ export default function CreateAccount({ onSignIn }) {
         navigate(`/signin${redirectTo !== "/" ? `?redirect=${encodeURIComponent(redirectTo)}` : ""}`);
       }, delay);
     } catch (err) {
-      setSubmitError(err.response?.data?.message || "Registration failed. Try again.");
+      const data = err.response?.data;
+      setSubmitError(data?.errors?.[0]?.message || data?.message || "Registration failed. Try again.");
     }
     setLoading(false);
   };
@@ -233,7 +269,7 @@ export default function CreateAccount({ onSignIn }) {
   };
 
   const nameValid = form.fullName.trim().length >= 3 && /^[A-Za-z\s]+$/.test(form.fullName);
-  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim());
+  const passwordsMatch = form.confirmPassword.length > 0 && form.password === form.confirmPassword;
 
   return (
     <main className="min-h-screen bg-[#fbf5ef] text-[#17120f] antialiased">
@@ -252,6 +288,8 @@ export default function CreateAccount({ onSignIn }) {
                 <input
                   className={inputCls(errors.fullName)}
                   placeholder="e.g. John Doe"
+                  autoComplete="name"
+                  maxLength={50}
                   value={form.fullName}
                   onChange={(e) => setField("fullName", e.target.value.replace(/[^A-Za-z\s]/g, "").replace(/\s+/g, " "))}
                 />
@@ -259,24 +297,106 @@ export default function CreateAccount({ onSignIn }) {
               </Field>
 
               <Field label="Email Address" error={errors.email}>
-                <div className={rowCls(errors.email)}>
+                <div className={rowCls(errors.email, emailVerified || (emailAvailable && !emailExists) ? "border-green-400" : "")}>
                   <Mail size={17} className="shrink-0 text-[#9b958f]" />
                   <input
                     className="ml-2 flex-1 bg-transparent text-[15px] text-[#312b26] outline-none placeholder:text-[#b8b0aa]"
                     placeholder="example@email.com"
                     type="email"
+                    autoComplete="email"
+                    maxLength={254}
                     value={form.email}
-                    onChange={(e) => { setField("email", e.target.value); setEmailExists(false); checkEmailUniqueness(e.target.value); }}
+                    disabled={emailVerified}
+                    onChange={(e) => {
+                      setField("email", e.target.value);
+                      setEmailExists(false);
+                      resetOtpFlow();
+                      checkEmailUniqueness(e.target.value);
+                    }}
                   />
-                  {form.email && emailValid && !emailExists && <CheckCircle2 size={16} className="text-green-500" />}
                   {checkingEmail && <Loader2 size={14} className="animate-spin text-[#9b958f]" />}
+                  {!checkingEmail && (emailVerified || (emailAvailable && !emailExists)) && (
+                    <span className="ml-2 flex items-center gap-1 text-[12px] font-bold text-green-600" title="This email has no account yet">
+                      <ShieldCheck size={15} /> Verified
+                    </span>
+                  )}
                 </div>
+
+                {emailVerified ? (
+                  <div className="mt-1.5 flex items-center gap-3">
+                    <p className="text-[12px] font-semibold text-green-600">✓ Email verified with OTP</p>
+                    <button
+                      type="button"
+                      onClick={() => { setEmailVerified(false); resetOtpFlow(); }}
+                      className="text-[12px] font-semibold text-[#ad4d00] underline"
+                    >
+                      Change email
+                    </button>
+                  </div>
+                ) : (
+                  emailReady && (
+                    <div className="mt-2 flex flex-wrap items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={sendOTP}
+                        disabled={!canSendOtp || otpLoading || resendTimer > 0}
+                        className="rounded-full bg-[#ad4d00] px-4 py-1.5 text-[12px] font-black text-white disabled:opacity-50"
+                      >
+                        {otpLoading ? <Loader2 size={12} className="animate-spin" /> : resendTimer > 0 ? `Resend in ${resendTimer}s` : otpSent ? "Resend OTP" : "Send OTP"}
+                      </button>
+                      {!phoneReady && <span className="text-[11px] text-[#9b958f]">Enter a valid phone number below to receive the OTP.</span>}
+                    </div>
+                  )
+                )}
+
+                {otpInfo && !emailVerified && <p className="mt-1.5 text-[12px] font-semibold text-green-700">{otpInfo}</p>}
+                {otpError && !emailVerified && <p className="mt-1.5 text-[12px] font-semibold text-red-600">{otpError}</p>}
+
+                {otpSent && !emailVerified && (
+                  <div className="mt-3">
+                    <div className="flex gap-2">
+                      {otp.map((d, i) => (
+                        <input
+                          key={i}
+                          ref={(el) => (otpRefs.current[i] = el)}
+                          type="text"
+                          inputMode="numeric"
+                          autoComplete={i === 0 ? "one-time-code" : "off"}
+                          maxLength={1}
+                          value={d}
+                          onChange={(e) => handleOtpChange(i, e.target.value)}
+                          onKeyDown={(e) => handleOtpKey(i, e)}
+                          onPaste={handleOtpPaste}
+                          aria-label={`OTP digit ${i + 1}`}
+                          className="h-11 w-11 rounded-xl border border-[#ded4cb] bg-white text-center text-[18px] font-bold text-[#17120f] outline-none focus:border-[#ad4d00] focus:ring-2 focus:ring-[#ad4d00]/20"
+                        />
+                      ))}
+                    </div>
+                    <div className="mt-2.5 flex flex-wrap items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={verifyOTP}
+                        disabled={verifyLoading || otpExpiry === 0}
+                        className="rounded-full bg-[#ad4d00] px-5 py-2 text-[13px] font-black text-white disabled:opacity-60"
+                      >
+                        {verifyLoading ? <Loader2 size={14} className="animate-spin" /> : "Verify OTP"}
+                      </button>
+                      {otpExpiry > 0 ? (
+                        <span className="text-[12px] text-[#6f7281]">OTP valid for {formatClock(otpExpiry)}</span>
+                      ) : (
+                        <span className="text-[12px] font-semibold text-red-600">OTP expired - request a new one</span>
+                      )}
+                    </div>
+                  </div>
+                )}
               </Field>
 
               <Field label="Phone Number" error={errors.phone}>
-                <div className={rowCls(errors.phone, phoneVerified ? "border-green-400" : "")}>
+                <div className={rowCls(errors.phone, phoneAvailable && !phoneExists ? "border-green-400" : "")}>
                   <div className="relative">
-                    <button type="button" onClick={() => setShowCountry((p) => !p)}
+                    <button
+                      type="button"
+                      onClick={() => setShowCountry((p) => !p)}
                       className="flex items-center gap-1.5 pr-3 border-r border-[#ded4cb] text-[13px] font-bold text-[#526784]"
                     >
                       <img src={flagUrl(country.code)} className="h-4 w-6 rounded object-cover" alt={country.name} />
@@ -286,14 +406,15 @@ export default function CreateAccount({ onSignIn }) {
                     {showCountry && (
                       <div className="absolute left-0 top-9 z-50 w-56 rounded-xl border border-[#ded4cb] bg-white shadow-xl overflow-y-auto max-h-52">
                         {COUNTRIES.map((c) => (
-                          <button key={c.code} type="button"
+                          <button
+                            key={c.code}
+                            type="button"
                             onClick={() => {
                               setCountry(c);
                               setShowCountry(false);
-                              setPhoneVerified(false);
-                              setOtpSent(false);
-                              setOtp(["", "", "", "", "", ""]);
-                              setOtpError("");
+                              setPhoneExists(false);
+                              setErrors((p) => ({ ...p, phone: "" }));
+                              checkPhoneUniqueness(form.phone, c.dial);
                             }}
                             className="flex w-full items-center gap-2 px-3 py-2.5 text-[13px] hover:bg-[#fbf2e9]"
                           >
@@ -309,68 +430,25 @@ export default function CreateAccount({ onSignIn }) {
                     className="ml-3 flex-1 bg-transparent text-[15px] text-[#312b26] outline-none placeholder:text-[#b8b0aa]"
                     placeholder="9876543210"
                     type="tel"
+                    inputMode="numeric"
+                    autoComplete="tel-national"
                     maxLength={10}
                     value={form.phone}
                     onChange={(e) => {
-                      setField("phone", e.target.value.replace(/\D/g, "").slice(0, 10));
-                      setPhoneVerified(false);
-                      setOtpSent(false);
-                      setOtp(["", "", "", "", "", ""]);
-                      setOtpError("");
+                      const digits = e.target.value.replace(/\D/g, "").slice(0, 10);
+                      setField("phone", digits);
                       setPhoneExists(false);
-                      checkPhoneUniqueness(e.target.value);
+                      checkPhoneUniqueness(digits, country.dial);
                     }}
-                    disabled={phoneVerified}
                   />
-                  {import.meta.env.DEV && (
-                    <button type="button" onClick={() => setDevMode((d) => !d)}
-                      title={devMode ? "Dev mode ON" : "Dev mode OFF"}
-                      className={`ml-2 rounded-full px-2.5 py-1 text-[11px] font-black transition ${devMode ? "bg-amber-500 text-white ring-2 ring-amber-400/50" : "bg-[#e8e2da] text-[#7a6e65]"}`}
-                    >Dev</button>
-                  )}
-
-                  {phoneVerified ? (
-                    <span className="ml-2 flex items-center gap-1 text-[12px] font-bold text-green-600">
+                  {checkingPhone && <Loader2 size={14} className="animate-spin text-[#9b958f]" />}
+                  {!checkingPhone && phoneAvailable && !phoneExists && (
+                    <span className="ml-2 flex items-center gap-1 text-[12px] font-bold text-green-600" title="This phone number has no account yet">
                       <ShieldCheck size={15} /> Verified
                     </span>
-                  ) : (
-                    !form.phone || form.phone.length < 10 ? null : (
-                      <button type="button" onClick={sendOTP} disabled={otpLoading || otpTimer > 0 || checkingPhone || phoneExists}
-                        className="ml-2 rounded-full bg-[#ad4d00] px-3 py-1 text-[12px] font-black text-white disabled:opacity-50"
-                      >
-                        {checkingPhone ? <Loader2 size={12} className="animate-spin" /> : otpLoading ? <Loader2 size={12} className="animate-spin" /> : otpTimer > 0 ? `${otpTimer}s` : "Send OTP"}
-                      </button>
-                    )
                   )}
                 </div>
-
-                {otpSent && !phoneVerified && (
-                  <div className="mt-3">
-                    <div className="flex gap-2">
-                      {otp.map((d, i) => (
-                        <input key={i} ref={(el) => (otpRefs.current[i] = el)}
-                          type="text" inputMode="numeric" maxLength={1} value={d}
-                          onChange={(e) => handleOtpChange(i, e.target.value)}
-                          onKeyDown={(e) => handleOtpKey(i, e)}
-                          className="h-11 w-11 rounded-xl border border-[#ded4cb] bg-white text-center text-[18px] font-bold text-[#17120f] outline-none focus:border-[#ad4d00] focus:ring-2 focus:ring-[#ad4d00]/20"
-                        />
-                      ))}
-                    </div>
-                    {otpError && <p className="mt-1.5 text-[12px] text-red-600">{otpError}</p>}
-                    <div className="mt-2.5 flex items-center gap-3">
-                      <button type="button" onClick={verifyOTP} disabled={verifyLoading}
-                        className="rounded-full bg-[#ad4d00] px-5 py-2 text-[13px] font-black text-white disabled:opacity-60"
-                      >
-                        {verifyLoading ? <Loader2 size={14} className="animate-spin" /> : "Verify OTP"}
-                      </button>
-                      {otpTimer === 0 ? (
-                        <button type="button" onClick={sendOTP} className="text-[12px] font-semibold text-[#ad4d00] underline">Resend OTP</button>
-                      ) : (
-                        <span className="text-[12px] text-[#9b958f]">Resend in {otpTimer}s</span>
-                      )}
-                    </div>
-                  </div>
-                )}
+                {form.phone && !phoneValid && <p className="mt-1 text-[11px] text-[#9b958f]">Enter exactly 10 digits</p>}
               </Field>
 
               <Field label="Password" error={errors.password}>
@@ -379,42 +457,36 @@ export default function CreateAccount({ onSignIn }) {
                     className="flex-1 bg-transparent text-[15px] text-[#312b26] outline-none placeholder:text-[#b8b0aa]"
                     placeholder="Enter password"
                     type={showPwd ? "text" : "password"}
+                    autoComplete="new-password"
+                    maxLength={128}
                     value={form.password}
                     onChange={(e) => setField("password", e.target.value)}
                   />
-                  <button type="button" onClick={() => setShowPwd((p) => !p)} className="ml-2 text-[#9b958f]">
+                  <button type="button" onClick={() => setShowPwd((p) => !p)} className="ml-2 text-[#9b958f]" aria-label={showPwd ? "Hide password" : "Show password"}>
                     {showPwd ? <EyeOff size={17} /> : <Eye size={17} />}
                   </button>
                 </div>
-                {form.password && (
-                  <div className="mt-2">
-                    <div className="flex items-center gap-2 text-[12px] font-semibold">
-                      <span>Strength:</span>
-                      <span className={strength.textColor}>{strength.label}</span>
-                    </div>
-                    <div className="mt-1 h-1.5 w-full rounded-full bg-[#dfd3ca] overflow-hidden">
-                      <div className={`h-full rounded-full transition-all ${strength.color}`} style={{ width: `${strength.pct}%` }} />
-                    </div>
-                  </div>
-                )}
+                <PasswordStrengthMeter password={form.password} />
               </Field>
 
               <Field label="Confirm Password" error={errors.confirmPassword}>
-                <div className={rowCls(errors.confirmPassword)}>
+                <div className={rowCls(errors.confirmPassword, passwordsMatch ? "border-green-400" : "")}>
                   <input
                     className="flex-1 bg-transparent text-[15px] text-[#312b26] outline-none placeholder:text-[#b8b0aa]"
                     placeholder="Confirm password"
                     type={showConfirm ? "text" : "password"}
+                    autoComplete="new-password"
+                    maxLength={128}
                     value={form.confirmPassword}
                     onChange={(e) => setField("confirmPassword", e.target.value)}
                   />
-                  <button type="button" onClick={() => setShowConfirm((p) => !p)} className="ml-2 text-[#9b958f]">
+                  {passwordsMatch && <CheckCircle2 size={19} className="ml-2 shrink-0 text-green-500" aria-label="Passwords match" />}
+                  <button type="button" onClick={() => setShowConfirm((p) => !p)} className="ml-2 text-[#9b958f]" aria-label={showConfirm ? "Hide password" : "Show password"}>
                     {showConfirm ? <EyeOff size={17} /> : <Eye size={17} />}
                   </button>
                 </div>
-                {form.confirmPassword && form.password === form.confirmPassword && (
-                  <p className="mt-1 text-[12px] font-semibold text-green-600">✓ Passwords match</p>
-                )}
+                {passwordsMatch && <p className="mt-1 text-[12px] font-semibold text-green-600">Passwords match</p>}
+                {form.confirmPassword && !passwordsMatch && <p className="mt-1 text-[12px] font-semibold text-red-600">Passwords do not match yet</p>}
               </Field>
 
               <label className="flex items-start gap-3 mt-4">
@@ -435,7 +507,9 @@ export default function CreateAccount({ onSignIn }) {
               {submitError && <p className="rounded-xl bg-red-50 px-4 py-3 text-[13px] font-semibold text-red-600">{submitError}</p>}
               {success && <p className="rounded-xl bg-green-50 px-4 py-3 text-[13px] font-semibold text-green-600">{success}</p>}
 
-              <button type="submit" disabled={loading || !termsAccepted}
+              <button
+                type="submit"
+                disabled={loading || !termsAccepted}
                 className="flex h-[50px] w-full items-center justify-center gap-2 rounded-full bg-[#a68135] text-[16px] font-black text-white shadow-[0_12px_24px_rgba(120,88,30,0.22)] transition hover:-translate-y-0.5 hover:bg-[#98762f] disabled:opacity-60"
               >
                 {loading ? <><Loader2 size={18} className="animate-spin" /> Creating Account...</> : "Create Account"}

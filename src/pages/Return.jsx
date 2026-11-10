@@ -273,24 +273,38 @@ function Return() {
       uploading: true,
     }));
     setEvidence((cur) => [...cur, ...placeholders]);
-    const form = new FormData();
-    list.forEach((f) => form.append("files", f));
-    try {
-      const { data } = await api.post("/returns/evidence", form, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-      const urls = data?.urls || [];
-      setEvidence((cur) =>
-        cur.map((e) => {
-          const idx = placeholders.findIndex((p) => p.id === e.id);
-          if (idx === -1) return e;
-          return { ...e, url: urls[idx] || null, uploading: false };
-        })
-      );
-    } catch {
-      // Keep previews; submit will surface the missing-photo requirement.
-      setEvidence((cur) => cur.map((e) => (placeholders.some((p) => p.id === e.id) ? { ...e, uploading: false } : e)));
-      setMessage("Photo upload failed — please retry. At least one product photo is mandatory for every return request.");
+    setMessage("");
+    // Upload each photo in its own request: one slow / rejected photo must not fail the others,
+    // and the upload gets a longer timeout than the 15s API default (Cloudinary can be slow).
+    const MAX_PHOTO_BYTES = 5 * 1024 * 1024; // matches the server-side limit
+    const failures = [];
+    await Promise.all(
+      list.map(async (file, idx) => {
+        const placeholder = placeholders[idx];
+        try {
+          if (file.size > MAX_PHOTO_BYTES) throw new Error("larger than the 5 MB limit");
+          const form = new FormData();
+          form.append("files", file);
+          const { data } = await api.post("/returns/evidence", form, {
+            headers: { "Content-Type": "multipart/form-data" },
+            timeout: 120000,
+          });
+          const url = data?.urls?.[0];
+          if (!url) throw new Error("the server did not return a photo URL");
+          setEvidence((cur) => cur.map((e) => (e.id === placeholder.id ? { ...e, url, uploading: false } : e)));
+        } catch (err) {
+          const reason =
+            err?.response?.data?.message ||
+            (err?.code === "ECONNABORTED" ? "the upload timed out" : err?.message) ||
+            "upload failed";
+          failures.push(`${file.name}: ${reason}`);
+          URL.revokeObjectURL(placeholder.preview);
+          setEvidence((cur) => cur.filter((e) => e.id !== placeholder.id));
+        }
+      })
+    );
+    if (failures.length) {
+      setMessage(`Photo upload failed — ${failures.join("; ")}. Please retry. At least one product photo is mandatory for every return request.`);
     }
   };
 

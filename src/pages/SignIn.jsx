@@ -167,7 +167,7 @@ export default function SignIn({ onSignIn }) {
                   <div>
                     <div className="mb-1.5 flex items-center justify-between">
                       <label className="text-[11px] font-black uppercase tracking-wide text-[#5a4f48]">Password</label>
-                      <button type="button" onClick={() => { setView("forgot"); setError(""); setSuccess(""); }}
+                      <button type="button" onClick={() => navigate("/forgot-password")}
                         className="text-[12px] font-semibold text-[#9b4518] hover:text-[#74300d]">Forgot Password?</button>
                     </div>
                     <div className="flex h-[48px] items-center rounded-[10px] border border-[#c9bdb5] bg-[#f7f0ec]/70 px-4">
